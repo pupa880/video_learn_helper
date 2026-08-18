@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>视频学习助手</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <input type="file" id="file-video" accept="video/*" hidden>
+  <input type="file" id="file-srt" accept=".srt" hidden>
+
+  <header>
+    <div class="brand">
+      <span class="logo">▶</span>
+      <h1>视频学习助手</h1>
+    </div>
+    <div class="header-actions">
+      <div class="menu-wrap workspace-only">
+        <button type="button" id="btn-app" class="icon-btn app-btn" title="菜单" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.7 7.7 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.93 6.93 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+          </svg>
+        </button>
+        <div class="menu menu-right" id="menu-app" hidden>
+          <div class="menu-label">显示面板</div>
+          <button type="button" class="menu-check" data-panel-toggle="video" aria-checked="true">视频</button>
+          <button type="button" class="menu-check" data-panel-toggle="subtitle" aria-checked="true">字幕</button>
+          <button type="button" class="menu-check" data-panel-toggle="chat" aria-checked="true">问答</button>
+          <div class="menu-sep"></div>
+          <button type="button" id="btn-reset-layout">重置布局</button>
+          <button type="button" id="btn-settings-menu">设置</button>
+        </div>
+      </div>
+      <button type="button" id="btn-settings" class="icon-btn settings-btn landing-only" title="设置">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.7 7.7 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.93 6.93 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <section id="landing" class="landing">
+    <div class="landing-inner">
+      <p class="landing-lead">打开一个课程或演讲，边看边问</p>
+      <div class="landing-actions">
+        <button type="button" id="btn-bili" class="btn primary landing-btn">加载 B站视频</button>
+        <button type="button" id="btn-upload-landing" class="btn landing-btn">上传本地视频</button>
+      </div>
+      <div id="landing-progress" class="progress" hidden>
+        <div class="bar"><div id="landing-bar-inner" class="bar-inner"></div></div>
+        <span id="landing-text" class="progress-text"></span>
+      </div>
+      <div id="landing-recent" class="landing-recent" hidden>
+        <h2>最近</h2>
+        <ul id="landing-recent-list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <main class="layout" id="layout">
+    <section class="region region-video" data-panel="video">
+        <div class="region-bar">
+          <span class="region-drag" draggable="true" title="拖动标题可调整布局">
+            <span class="drag-grip" aria-hidden="true"></span>
+            <span class="region-title">视频</span>
+          </span>
+          <span id="video-title" class="video-title"></span>
+          <div class="menu-wrap">
+            <button type="button" class="icon-btn" id="btn-video-more" title="更多" aria-haspopup="true" aria-expanded="false">⋮</button>
+            <div class="menu menu-right" id="menu-video" hidden>
+              <button type="button" id="menu-bili">加载 B站视频</button>
+              <button type="button" id="menu-upload-video">上传本地视频</button>
+              <div class="menu-sep"></div>
+              <div class="menu-label">最近视频</div>
+              <div id="menu-recent"></div>
+              <div class="menu-sep"></div>
+              <button type="button" id="menu-caption" class="menu-check" aria-checked="true">显示画面字幕</button>
+              <button type="button" id="menu-close-video">关闭视频</button>
+            </div>
+          </div>
+        </div>
+        <div id="dl-progress" class="progress" hidden>
+          <div class="bar"><div id="dl-bar-inner" class="bar-inner"></div></div>
+          <span id="dl-text" class="progress-text">下载中…</span>
+        </div>
+        <div id="player-box">
+          <div class="player-wrap">
+            <video id="player" preload="metadata" draggable="false"></video>
+            <div id="video-caption" class="video-caption" hidden></div>
+          </div>
+          <div class="player-controls">
+            <button id="btn-play" class="pc-btn" title="播放/暂停">▶</button>
+            <input type="range" id="seek-bar" class="pc-seek" min="0" max="1000" value="0">
+            <span id="time-display" class="pc-time">00:00 / 00:00</span>
+            <select id="quality-select" class="pc-quality" title="切换清晰度" hidden></select>
+            <button id="btn-caption" class="pc-btn is-on" title="字幕" aria-pressed="true">CC</button>
+            <button id="btn-mute" class="pc-btn" title="静音">🔊</button>
+            <input type="range" id="volume-bar" class="pc-vol" min="0" max="1" step="0.05" value="1" title="音量">
+            <button id="btn-fullscreen" class="pc-btn" title="全屏">⛶</button>
+          </div>
+        </div>
+      </section>
+
+    <section class="region region-chat" data-panel="chat">
+        <div class="region-bar">
+          <span class="region-drag" draggable="true" title="拖动标题可调整布局">
+            <span class="drag-grip" aria-hidden="true"></span>
+            <span class="region-title">AI 问答</span>
+          </span>
+          <div class="menu-wrap">
+            <button type="button" class="icon-btn" id="btn-chat-more" title="更多" aria-haspopup="true" aria-expanded="false">⋮</button>
+            <div class="menu menu-right" id="menu-chat" hidden>
+              <button type="button" id="btn-chat-settings">对话设置</button>
+              <span class="tip"><button type="button" id="btn-summary" disabled>生成视频总结</button></span>
+              <div class="menu-sep"></div>
+              <button type="button" id="btn-clear-chat">清空对话</button>
+            </div>
+          </div>
+        </div>
+        <div id="chat-messages" class="chat-messages">
+          <div class="chat-empty">问这节课里没听懂的地方</div>
+        </div>
+        <div id="chat-nosub" class="chat-nosub" hidden>
+          <p>当前视频没有字幕，AI 看不到里面讲了什么。要结合内容提问，请先转录或上传 SRT；问别的事情可以直接发。</p>
+          <div class="chat-nosub-actions">
+            <button type="button" id="nosub-srt" class="btn small">上传 SRT</button>
+            <button type="button" id="nosub-transcribe" class="btn small">开始转录</button>
+            <button type="button" id="nosub-dismiss" class="btn small ghost">知道了</button>
+          </div>
+        </div>
+        <div class="chat-input">
+          <div class="composer-tools">
+            <label class="chip" title="把当前这句字幕一并发给 AI">
+              <input type="checkbox" id="chk-subtitles">
+              <span>字幕</span>
+            </label>
+            <label class="chip" title="把当前视频画面发给 AI">
+              <input type="checkbox" id="chk-frame">
+              <span>画面</span>
+            </label>
+            <label class="chip" title="临时开启模型的思考过程（需模型支持）">
+              <input type="checkbox" id="chk-thinking">
+              <span>思考</span>
+            </label>
+          </div>
+          <div id="composer-cue" class="composer-cue" hidden></div>
+          <div class="composer-row">
+            <textarea id="chat-text" rows="2" placeholder="问这节课…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <button id="btn-send" class="btn primary">发送</button>
+          </div>
+        </div>
+    </section>
+
+    <section class="region region-subtitle" data-panel="subtitle">
+      <div class="region-bar">
+        <span class="region-drag" draggable="true" title="拖动标题可调整布局">
+          <span class="drag-grip" aria-hidden="true"></span>
+          <span class="region-title">字幕</span>
+        </span>
+        <div class="menu-wrap">
+          <button type="button" class="icon-btn" id="btn-sub-more" title="更多" aria-haspopup="true" aria-expanded="false">⋮</button>
+          <div class="menu menu-right" id="menu-sub" hidden>
+            <button type="button" id="menu-srt">上传 SRT</button>
+            <button type="button" id="menu-bili-sub">拉取 B站官方字幕</button>
+            <button type="button" id="menu-transcribe">开始实时转录</button>
+            <div class="menu-sep"></div>
+            <button type="button" id="btn-export-srt">导出 SRT</button>
+            <button type="button" id="btn-transcribe-stop" class="menu-danger" hidden>停止转录</button>
+          </div>
+        </div>
+      </div>
+      <div id="transcribe-status" class="hint"></div>
+      <div id="ts-progress" class="progress" hidden>
+        <div class="bar"><div id="ts-bar-inner" class="bar-inner"></div></div>
+        <span id="ts-text" class="progress-text"></span>
+      </div>
+      <ul id="subtitle-list" class="subtitle-list"></ul>
+    </section>
+  </main>
+
+  <!-- B站视频加载弹窗 -->
+  <div id="bili-modal" class="modal" hidden>
+    <div class="modal-body">
+      <h2>加载 B站视频</h2>
+      <div class="form-row">
+        <label>链接</label>
+        <input type="text" id="bili-url" placeholder="粘贴 B站链接或 BV 号，支持多P视频">
+      </div>
+      <div id="bili-info" hidden>
+        <div id="bili-info-title" class="bili-info-title"></div>
+        <div class="form-row" id="bili-part-row" hidden>
+          <label>分P</label>
+          <select id="bili-part"></select>
+        </div>
+        <div class="form-row">
+          <label>清晰度</label>
+          <select id="bili-quality"></select>
+        </div>
+      </div>
+      <div id="bili-modal-status" class="hint"></div>
+      <div class="modal-actions">
+        <button id="btn-bili-stream" class="btn primary" disabled>在线播放</button>
+        <button id="btn-bili-cancel" class="btn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置面板 -->
+  <div id="settings-modal" class="modal" hidden>
+    <div class="modal-body">
+      <h2>设置</h2>
+      <h3>LLM</h3>
+      <div class="form-row">
+        <label>提供商</label>
+        <select id="cfg-provider"></select>
+        <button id="btn-edit-provider" class="btn small" type="button">提供商设置</button>
+        <button id="btn-add-provider" class="btn small" type="button">新增提供商</button>
+      </div>
+      <div class="form-row">
+        <label>模型</label>
+        <input type="text" id="cfg-model">
+        <select id="cfg-model-select" hidden></select>
+        <button id="btn-fetch-models" class="btn small">拉取列表</button>
+      </div>
+      <h3>B站 cookies</h3>
+      <div class="form-row">
+        <label class="btn small file-btn">
+          上传 cookies.txt
+          <input type="file" id="cfg-cookies" accept=".txt" hidden>
+        </label>
+        <span id="cookies-status" class="hint"></span>
+      </div>
+      <h3>ASR 转录</h3>
+      <div class="form-row">
+        <label>模型</label>
+        <select id="cfg-asr-model">
+          <option value="faster-whisper">faster-whisper</option>
+          <option value="sensevoice">SenseVoiceSmall</option>
+        </select>
+        <span id="wrap-whisper-model" class="sub-fields">
+          <label>whisper 规格</label>
+          <select id="cfg-whisper-model"></select>
+        </span>
+      </div>
+      <div class="form-row">
+        <label>设备</label>
+        <select id="cfg-asr-device">
+          <option value="cpu">cpu</option>
+          <option value="cuda">cuda</option>
+        </select>
+        <label>语言</label>
+        <select id="cfg-asr-language"></select>
+      </div>
+      <div id="asr-availability" class="hint"></div>
+      <div id="settings-status" class="hint"></div>
+      <div class="modal-actions">
+        <button id="btn-save-settings" class="btn primary">保存</button>
+        <button id="btn-close-settings" class="btn">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 对话上下文设置弹窗 -->
+  <div id="chat-settings-modal" class="modal" hidden>
+    <div class="modal-body">
+      <h2>对话上下文设置</h2>
+      <div class="hint">以下设置决定每次提问时，除了问题本身还把哪些内容发给 AI。这些都会占用上下文（消耗 token），每次注入了什么会在对话记录中显示。</div>
+
+      <h3>背景资料</h3>
+      <div class="cs-item">
+        <label class="chk"><input type="checkbox" id="cs-summary"> 注入视频总结</label>
+        <div class="cs-desc">把视频的内容总结发给 AI，让它了解整个视频的大致内容。首次注入时若没有现成总结会自动生成一次（之后缓存复用，和「生成视频总结」按钮生成的是同一份）。总结远比完整字幕短，AI 上下文窗口有限或想节省 token 时选这个更合适。</div>
+      </div>
+      <div class="cs-item">
+        <label class="chk"><input type="checkbox" id="cs-full-subtitles"> 注入完整字幕</label>
+        <div class="cs-desc">把整部视频的全部字幕（带时间戳）发给 AI，AI 可以看到视频的每一句内容。字幕过长时会被截断（上限约 60,000 字符），截断后视频末尾的内容 AI 看不到。与视频总结内容重叠，一般二选一即可：上下文窗口够大、想要最完整的信息选这个；窗口有限或想省 token 选视频总结。</div>
+      </div>
+
+      <h3>「发送当前字幕」的携带范围</h3>
+      <div class="cs-desc">勾选输入框上方的「发送当前字幕」后，除了你正停在这一句，还会顺带把它前后各若干条字幕一起发给 AI，帮 AI 理解上下文。已开启「注入完整字幕」时前后文不再重复发送。</div>
+      <div class="form-row">
+        <label>当前这句之前</label>
+        <input type="number" id="cs-before" min="0" max="100" step="1">
+        <span class="cs-unit">条</span>
+      </div>
+      <div class="form-row">
+        <label>当前这句之后</label>
+        <input type="number" id="cs-after" min="0" max="100" step="1">
+        <span class="cs-unit">条</span>
+      </div>
+      <div id="cs-preview" class="hint"></div>
+
+      <div class="modal-actions">
+        <button id="btn-chat-settings-close" class="btn primary">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提供商设置 / 新增提供商弹窗 -->
+  <div id="provider-modal" class="modal" hidden>
+    <div class="modal-body">
+      <h2 id="provider-modal-title">提供商设置</h2>
+      <div class="form-row" id="pv-name-row">
+        <label>名称</label>
+        <input type="text" id="pv-name" placeholder="如 moonshot 或 轨迹律动">
+      </div>
+      <div class="form-row" id="pv-protocol-row">
+        <label>协议</label>
+        <select id="pv-protocol">
+          <option value="openai">OpenAI 兼容</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Base URL</label>
+        <input type="text" id="pv-base-url" placeholder="https://api.example.com/v1">
+      </div>
+      <div class="form-row">
+        <label>API Key</label>
+        <input type="password" id="pv-api-key" placeholder="">
+      </div>
+      <div class="form-row">
+        <label class="chk"><input type="checkbox" id="pv-supports-image"> 模型支持图像识别（可发送视频帧）</label>
+      </div>
+      <div id="pv-status" class="hint"></div>
+      <div class="modal-actions">
+        <button id="btn-pv-delete" class="btn danger pv-delete">删除</button>
+        <button id="btn-pv-save" class="btn primary">保存</button>
+        <button id="btn-pv-cancel" class="btn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/hls.min.js"></script>
+  <script src="/static/vendor/dash.all.min.js"></script>
+  <script src="/static/layout.js"></script>
+  <script src="/static/main.js"></script>
+</body>
+</html>

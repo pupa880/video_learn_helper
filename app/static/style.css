@@ -711,7 +711,7 @@ select { cursor: pointer; }
   color: #fff;
   border-bottom-right-radius: 4px;
 }
-/* 用户气泡内引用的当前字幕 */
+/* 用户气泡内引用的当前字幕（已写入本条 messages） */
 .msg.user .quote {
   background: rgba(255, 255, 255, .18);
   border-left: 3px solid rgba(255, 255, 255, .65);
@@ -721,6 +721,31 @@ select { cursor: pointer; }
   font-size: 12.5px;
   line-height: 1.5;
   color: rgba(255, 255, 255, .92);
+}
+.msg.user .quote-cap {
+  font-size: 11px;
+  opacity: .8;
+  margin-bottom: 2px;
+}
+.msg.user .turn-ctx {
+  background: rgba(255, 255, 255, .14);
+  border-radius: 6px;
+  padding: 4px 9px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, .9);
+}
+.msg.user .turn-ctx summary {
+  cursor: pointer;
+  user-select: none;
+}
+.msg.user .turn-ctx-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+  line-height: 1.5;
 }
 /* 用户气泡内附带的当前视频帧 */
 .msg.user .frame { margin-bottom: 6px; }
@@ -846,40 +871,15 @@ select { cursor: pointer; }
   overflow-y: auto;
 }
 
-/* 用户气泡上的注入上下文：按实际发送顺序贴在问题前面 */
-.msg.user .ctx-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-bottom: 6px;
-}
-.msg.user .ctx-chip {
-  border: 1px solid rgba(255, 255, 255, .35);
-  background: rgba(255, 255, 255, .12);
-  color: rgba(255, 255, 255, .92);
-  border-radius: 999px;
-  padding: 1px 8px;
-  font-size: 11.5px;
-  cursor: pointer;
-  font-family: inherit;
-}
-.msg.user .ctx-chip:hover,
-.msg.user .ctx-chip.is-open {
-  background: rgba(255, 255, 255, .22);
-}
-.msg.user .ctx-preview {
-  background: rgba(255, 255, 255, .14);
-  border-radius: 6px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
+/* 问答区顶部：本轮会注入的 system 背景（不贴在每条气泡上） */
+.chat-inject {
+  flex-shrink: 0;
+  padding: 8px 14px 0;
   font-size: 12px;
-  line-height: 1.5;
-  color: rgba(255, 255, 255, .9);
-  max-height: 160px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+  line-height: 1.4;
+  color: var(--text-dim);
 }
+.chat-inject[hidden] { display: none; }
 
 /* 对话上下文设置弹窗 */
 #chat-settings-modal .hint { margin-bottom: 4px; }

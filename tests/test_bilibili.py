@@ -1,6 +1,6 @@
 """B站链接分P 参数处理（纯函数，不访问网络）。"""
 
-from app.services.bilibili import page_from_url, with_page
+from app.services.bilibili import page_from_url, upload_date_of, with_page
 
 
 def test_page_from_url():
@@ -24,6 +24,13 @@ def test_with_page_replaces_existing():
     assert "p=5" in out
     assert "p=2" not in out
     assert "spm_id_from=333" in out
+
+
+def test_upload_date_of():
+    assert upload_date_of({"upload_date": "20260315"}) == "2026-03-15"
+    assert upload_date_of({"timestamp": 1_710_460_800}) == "2024-03-15"
+    assert upload_date_of({}) == ""
+    assert upload_date_of({"upload_date": "bad"}) == ""
 
 
 def test_with_page_appends():

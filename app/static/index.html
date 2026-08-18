@@ -120,6 +120,7 @@
             </div>
           </div>
         </div>
+        <div id="chat-inject" class="chat-inject" hidden></div>
         <div id="chat-messages" class="chat-messages">
           <div class="chat-empty">问这节课里没听懂的地方</div>
         </div>
@@ -267,9 +268,13 @@
   <div id="chat-settings-modal" class="modal" hidden>
     <div class="modal-body">
       <h2>对话上下文设置</h2>
-      <div class="hint">以下设置决定每次提问时，除了问题本身还把哪些内容发给 AI。这些都会占用上下文（消耗 token），每次注入了什么会在对话记录中显示。</div>
+      <div class="hint">以下设置决定每次提问时，除了问题本身还把哪些内容发给 AI。当前字幕会写进这一条用户消息并随历史留下来；视频信息 / 总结 / 完整字幕是整段视频的背景，每轮作为系统消息注入，不进对话历史。</div>
 
       <h3>背景资料</h3>
+      <div class="cs-item">
+        <label class="chk"><input type="checkbox" id="cs-video-info"> 注入视频信息</label>
+        <div class="cs-desc">把标题、UP 主、发布时间（多 P 时还有分 P）发给 AI，方便回答「这是谁讲的」「哪年的课」这类问题。很短，几乎不占上下文。</div>
+      </div>
       <div class="cs-item">
         <label class="chk"><input type="checkbox" id="cs-summary"> 注入视频总结</label>
         <div class="cs-desc">把视频的内容总结发给 AI，让它了解整个视频的大致内容。首次注入时若没有现成总结会自动生成一次（之后缓存复用，和「生成视频总结」按钮生成的是同一份）。总结远比完整字幕短，AI 上下文窗口有限或想节省 token 时选这个更合适。</div>
@@ -280,7 +285,7 @@
       </div>
 
       <h3>「发送当前字幕」的携带范围</h3>
-      <div class="cs-desc">勾选输入框上方的「发送当前字幕」后，除了你正停在这一句，还会顺带把它前后各若干条字幕一起发给 AI，帮 AI 理解上下文。已开启「注入完整字幕」时前后文不再重复发送。</div>
+      <div class="cs-desc">勾选输入框上方的「字幕」后，当前这句和它前后各若干条会写进这一条用户消息（之后问「这个 / 为啥」时模型仍能看到当时指的是哪句）。已开启「注入完整字幕」时前后文不再重复写入。</div>
       <div class="form-row">
         <label>当前这句之前</label>
         <input type="number" id="cs-before" min="0" max="100" step="1">

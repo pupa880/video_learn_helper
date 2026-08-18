@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -76,6 +77,7 @@ def extract_info(url: str) -> dict[str, Any]:
         "title": main_title or info.get("title", ""),
         "duration": info.get("duration", 0),
         "uploader": info.get("uploader", ""),
+        "upload_date": upload_date_of(info),
         "webpage_url": info.get("webpage_url", url),
         "bvid": _extract_bvid(info.get("webpage_url", url)),
         "heights": heights,
@@ -84,6 +86,21 @@ def extract_info(url: str) -> dict[str, Any]:
         "parts": parts,
         "page": requested_page if parts else 1,
     }
+
+
+def upload_date_of(info: dict) -> str:
+    """yt-dlp 的 upload_date（YYYYMMDD）或 timestamp → ``YYYY-MM-DD``；没有则空串。"""
+    raw = info.get("upload_date")
+    if raw and re.fullmatch(r"\d{8}", str(raw)):
+        s = str(raw)
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    ts = info.get("timestamp") or info.get("release_timestamp")
+    if ts:
+        try:
+            return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+        except (TypeError, ValueError, OSError, OverflowError):
+            return ""
+    return ""
 
 
 def _extract_bvid(url: str) -> str | None:
@@ -138,6 +155,7 @@ def resolve_stream(url: str, max_height: int = 720, page: int = 1) -> dict[str, 
         "title": info.get("title", ""),
         "duration": info.get("duration", 0),
         "uploader": info.get("uploader", ""),
+        "upload_date": upload_date_of(info),
         "webpage_url": info.get("webpage_url", url),
         "bvid": _extract_bvid(info.get("webpage_url", url)),
         "has_subtitles": bool(info.get("subtitles")),

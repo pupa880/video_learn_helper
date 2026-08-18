@@ -106,6 +106,10 @@ def bilibili_load(req: BilibiliRequest):
         if info.get("qualities"):
             meta["qualities"] = info["qualities"]
         meta["duration"] = meta.get("duration") or info.get("duration", 0)
+        if info.get("uploader") and not meta.get("uploader"):
+            meta["uploader"] = info["uploader"]
+        if info.get("upload_date") and not meta.get("upload_date"):
+            meta["upload_date"] = info["upload_date"]
         state.save_meta(req.video_id, meta)
         return {"video_id": req.video_id, "name": meta.get("name"), "url": meta.get("url"),
                 "has_file": False, "kind": info["kind"], "height": info.get("height", 0),
@@ -124,6 +128,7 @@ def bilibili_load(req: BilibiliRequest):
         "url": bilibili.with_page(info.get("webpage_url", req.url), req.page),
         "page": req.page,
         "uploader": info.get("uploader", ""),
+        "upload_date": info.get("upload_date", ""),
         "duration": info.get("duration", 0),
         # 串流地址（会过期，仅供本次会话播放；转录等场景走下载）
         "stream": {k: info[k] for k in _STREAM_KEYS if k in info},
@@ -191,6 +196,7 @@ def bilibili_download(req: BilibiliRequest):
                 "url": bilibili.with_page(info.get("webpage_url", url), req.page),
                 "page": req.page,
                 "uploader": info.get("uploader", ""),
+                "upload_date": info.get("upload_date", ""),
             }
 
         def hook(d: dict):

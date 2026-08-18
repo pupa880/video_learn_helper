@@ -18,6 +18,11 @@ const state = {
   dash: null,         // dash.js 实例，换视频时销毁
 };
 
+// 调试：Console 里 `state.messages`（历史）/ `lastLlmMessages`（含 system 的完整列表）
+window.state = state;
+window.lastChatPayload = null;
+window.lastLlmMessages = null;
+
 /* ---------- Markdown 渲染（markdown-it + CJK 友好插件，CDN 动态加载） ---------- */
 
 let md = null; // null 时降级为纯文本
@@ -993,6 +998,7 @@ function updateNoSubHint() {
       : !state.cues.length ? '需要先有字幕才能生成总结'
         : '');
   updateComposerCue();
+  updateChatInjectHint();
 }
 
 /* ---------- AI 问答 ---------- */
@@ -1016,14 +1022,31 @@ function addMessage(role, text) {
   return div;
 }
 
-function addUserMessage(text, { cue, image } = {}) {
+function addUserMessage(text, { currentText, windowText, image } = {}) {
   const div = document.createElement('div');
   div.className = 'msg user';
-  if (cue) {
+  if (currentText) {
     const quote = document.createElement('div');
     quote.className = 'quote';
-    quote.textContent = `${fmtTime(cue.start)}  ${cue.text}`;
+    const cap = document.createElement('div');
+    cap.className = 'quote-cap';
+    cap.textContent = '当前字幕';
+    const body = document.createElement('div');
+    body.textContent = currentText;
+    quote.append(cap, body);
     div.append(quote);
+  }
+  if (windowText) {
+    const box = document.createElement('details');
+    box.className = 'turn-ctx';
+    const sum = document.createElement('summary');
+    const n = windowText.split('\n').filter(Boolean).length;
+    sum.textContent = `前后文 ${n} 条`;
+    const body = document.createElement('div');
+    body.className = 'turn-ctx-body';
+    body.textContent = windowText;
+    box.append(sum, body);
+    div.append(box);
   }
   if (image) {
     const box = document.createElement('div');
@@ -1089,6 +1112,57 @@ function currentCueAt(t) {
   return idx >= 0 ? state.cues[idx] : null;
 }
 
+/* 与后端 _fmt_ts / cues_to_text(with_time=True) 对齐： [HH:MM:SS,mmm] */
+function fmtCueTs(sec) {
+  const totalMs = Math.round(Math.max(0, Number(sec) || 0) * 1000);
+  const h = Math.floor(totalMs / 3_600_000);
+  let rem = totalMs % 3_600_000;
+  const m = Math.floor(rem / 60_000);
+  rem %= 60_000;
+  const s = Math.floor(rem / 1000);
+  const ms = rem % 1000;
+  const pad = (n, w) => String(n).padStart(w, '0');
+  return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)},${pad(ms, 3)}`;
+}
+
+function cueToText(cue) {
+  return `[${fmtCueTs(cue.start)}] ${cue.text}`;
+}
+
+function collectTurnSubtitles(t) {
+  if (!$('chk-subtitles').checked || !state.cues.length) {
+    return { current: null, window: null };
+  }
+  let idx = -1;
+  for (let i = 0; i < state.cues.length; i++) {
+    if (state.cues[i].start <= t) idx = i; else break;
+  }
+  if (idx < 0) return { current: null, window: null };
+  const current = cueToText(state.cues[idx]);
+  let windowText = null;
+  // 已注入完整字幕时前后文不再重复写入本条
+  if (!chatCtx.fullSubtitles) {
+    const before = Math.max(0, chatCtx.before);
+    const after = Math.max(0, chatCtx.after);
+    const win = state.cues.slice(Math.max(0, idx - before), idx)
+      .concat(state.cues.slice(idx + 1, idx + 1 + after));
+    if (win.length) windowText = win.map(cueToText).join('\n');
+  }
+  return { current, window: windowText };
+}
+
+function composeUserContent(question, { current, window: windowText } = {}) {
+  const parts = [];
+  if (current) {
+    parts.push('【当前字幕】用户当前停留在这一句；用户说“这句话”“这句”时通常指它。\n' + current);
+  }
+  if (windowText) {
+    parts.push('【当前播放位置前后的字幕】\n' + windowText);
+  }
+  parts.push(question);
+  return parts.join('\n\n');
+}
+
 function captureFrame() {
   const video = $('player');
   if (!video.videoWidth) return null;
@@ -1115,6 +1189,7 @@ function loadChatCtx() {
   try { raw = JSON.parse(localStorage.getItem('chatCtx') || '{}'); } catch {}
   return {
     summary: raw.summary !== false,                 // 默认开
+    videoInfo: raw.videoInfo !== false,             // 默认开
     fullSubtitles: raw.fullSubtitles === true,      // 默认关
     before: clampInt(raw.before, 0, 100, 10),
     after: clampInt(raw.after, 0, 100, 0),
@@ -1144,20 +1219,28 @@ function confirmBothCtx(toggled) {
 
 function initChatSettings() {
   $('cs-summary').checked = chatCtx.summary;
+  $('cs-video-info').checked = chatCtx.videoInfo;
   $('cs-full-subtitles').checked = chatCtx.fullSubtitles;
   $('cs-before').value = chatCtx.before;
   $('cs-after').value = chatCtx.after;
   updateCsPreview();
 
+  $('cs-video-info').addEventListener('change', (e) => {
+    chatCtx.videoInfo = e.target.checked;
+    saveChatCtx();
+    updateChatInjectHint();
+  });
   $('cs-summary').addEventListener('change', (e) => {
     chatCtx.summary = e.target.checked;
     if (e.target.checked && !confirmBothCtx(e.target)) chatCtx.summary = false;
     saveChatCtx();
+    updateChatInjectHint();
   });
   $('cs-full-subtitles').addEventListener('change', (e) => {
     chatCtx.fullSubtitles = e.target.checked;
     if (e.target.checked && !confirmBothCtx(e.target)) chatCtx.fullSubtitles = false;
     saveChatCtx();
+    updateChatInjectHint();
   });
   $('cs-before').addEventListener('change', (e) => {
     chatCtx.before = clampInt(e.target.value, 0, 100, 10);
@@ -1177,38 +1260,20 @@ function initChatSettings() {
 }
 initChatSettings();
 
-/* 注入上下文贴在用户气泡开头（与发给模型的顺序一致）；当前字幕已有引用块，不再重复 */
-function attachContextChips(userDiv, items) {
-  if (!items?.length) return;
-  const rest = items.filter((it) => it.label !== '当前字幕');
-  if (!rest.length) return;
-  const row = document.createElement('div');
-  row.className = 'ctx-chips';
-  let preview = null;
-  for (const it of rest) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'ctx-chip';
-    b.textContent = it.label;
-    b.title = `${(it.text || '').length.toLocaleString()} 字符${it.truncated ? '，已截断' : ''}`;
-    b.addEventListener('click', () => {
-      const open = b.classList.toggle('is-open');
-      row.querySelectorAll('.ctx-chip').forEach((x) => { if (x !== b) x.classList.remove('is-open'); });
-      if (!open) {
-        preview?.remove();
-        preview = null;
-        return;
-      }
-      if (!preview) {
-        preview = document.createElement('div');
-        preview.className = 'ctx-preview';
-        row.after(preview);
-      }
-      preview.textContent = it.text || '';
-    });
-    row.append(b);
+function updateChatInjectHint() {
+  const el = $('chat-inject');
+  if (!el) return;
+  const names = [];
+  if (state.videoId && chatCtx.videoInfo) names.push('视频信息');
+  if (state.videoId && state.cues.length && chatCtx.summary) names.push('视频总结');
+  if (state.videoId && state.cues.length && chatCtx.fullSubtitles) names.push('完整字幕');
+  if (!names.length) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
   }
-  userDiv.prepend(row);
+  el.hidden = false;
+  el.textContent = `已注入${names.join('、')}`;
 }
 
 async function sendChat() {
@@ -1223,10 +1288,15 @@ async function sendChat() {
   }
 
   const curTime = $('player').currentTime || 0;
-  const cue = $('chk-subtitles').checked ? currentCueAt(curTime) : null;
+  const turn = collectTurnSubtitles(curTime);
   const image = $('chk-frame').checked ? captureFrame() : null;
-  const userDiv = addUserMessage(text, { cue, image });
-  state.messages.push({ role: 'user', content: text });
+  const userContent = composeUserContent(text, turn);
+  const userDiv = addUserMessage(text, {
+    currentText: turn.current,
+    windowText: turn.window,
+    image,
+  });
+  state.messages.push({ role: 'user', content: userContent });
 
   const assistantDiv = addPendingAssistant();
   const contentEl = mdContainer(assistantDiv);
@@ -1244,28 +1314,31 @@ async function sendChat() {
   state.sending = true;
   $('btn-send').disabled = true;
   try {
+    const payload = {
+      messages: state.messages.slice(-20),
+      video_id: state.videoId,
+      include_subtitles: $('chk-subtitles').checked,
+      current_time: curTime,
+      image_b64: image,
+      enable_thinking: $('chk-thinking').checked,
+      include_summary: chatCtx.summary,
+      include_video_info: chatCtx.videoInfo,
+      include_full_subtitles: chatCtx.fullSubtitles,
+      subtitle_before: chatCtx.before,
+      subtitle_after: chatCtx.after,
+    };
+    window.lastChatPayload = payload;
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: state.messages.slice(-20),
-        video_id: state.videoId,
-        include_subtitles: $('chk-subtitles').checked,
-        current_time: curTime,
-        image_b64: image,
-        enable_thinking: $('chk-thinking').checked,
-        include_summary: chatCtx.summary,
-        include_full_subtitles: chatCtx.fullSubtitles,
-        subtitle_before: chatCtx.before,
-        subtitle_after: chatCtx.after,
-      }),
+      body: JSON.stringify(payload),
     });
     if (!resp.ok) throw new Error((await resp.json()).detail || '请求失败');
     await consumeSSE(resp, (ev) => {
       if (ev.type === 'status') {
         if (statusEl) statusEl.textContent = ev.text;
-      } else if (ev.type === 'context') {
-        attachContextChips(userDiv, ev.items);
+      } else if (ev.type === 'messages') {
+        window.lastLlmMessages = ev.messages;
       } else if (ev.type === 'reasoning') {
         showAnswer();
         if (!thinkEl) {

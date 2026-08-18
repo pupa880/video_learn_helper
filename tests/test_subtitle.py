@@ -86,24 +86,96 @@ def test_parse_bilibili_subtitle():
     assert cues_to_text(cues) == "第一句\n第二句"
 
 
+def test_format_video_info():
+    from app.services.llm import format_video_info
+
+    text = format_video_info({
+        "name": "02 - 应用视角的操作系统",
+        "uploader": "绿导师原谅你了",
+        "upload_date": "20260315",
+        "page": 2,
+        "url": "https://www.bilibili.com/video/BVxxxx",
+        "duration": 5275,
+    })
+    assert "标题：02 - 应用视角的操作系统" in text
+    assert "UP主：绿导师原谅你了" in text
+    assert "发布时间：2026-03-15" in text
+    assert "分P：第 2 集" in text
+    assert "http" not in text
+    assert "时长" not in text
+    assert "BVxxxx" not in text
+
+    local = format_video_info({"name": "乔布斯演讲.mp4", "source": "local"})
+    assert "标题：乔布斯演讲.mp4" in local
+    assert "UP主" not in local
+    assert format_video_info({}) is None
+    assert format_video_info(None) is None
+
+
+def test_compose_user_content():
+    from app.services.llm import compose_user_content
+
+    text = compose_user_content(
+        "这个指的是什么",
+        current_subtitle="[00:18:45,000] 但没有人知道这个是不是真的",
+        subtitle_context="[00:18:40,000] 前一句",
+    )
+    assert text.startswith("【当前字幕】")
+    assert "[00:18:45,000]" in text
+    assert "【当前播放位置前后的字幕】" in text
+    assert text.endswith("这个指的是什么")
+
+    assert compose_user_content("hi") == "hi"
+
+
 def test_build_qa_messages():
-    from app.services.llm import build_qa_messages
+    from app.services.llm import build_qa_messages, compose_user_content
 
     msgs = build_qa_messages(
         [{"role": "user", "content": "刚才讲了什么？"}],
         summary="这是总结",
+        video_info="【当前视频信息】\n标题：某课",
         subtitle_context="[00:00] 附近字幕",
+        current_subtitle="[00:00] 当前这句",
         image_b64="aW1hZ2U=",
     )
     assert msgs[0]["role"] == "system"
-    assert "总结" in msgs[1]["content"]
-    assert "字幕" in msgs[2]["content"]
+    assert msgs[1]["role"] == "system"
+    assert "当前视频信息" in msgs[1]["content"]
+    assert msgs[2]["role"] == "system"
+    assert "总结" in msgs[2]["content"]
+    # 字幕并进 user，不再占一条 system
+    assert all("【当前字幕】" not in m["content"] for m in msgs if m["role"] == "system")
     last = msgs[-1]
+    assert last["role"] == "user"
     assert isinstance(last["content"], list)
-    assert last["content"][0]["type"] == "text"
+    text = last["content"][0]["text"]
+    assert "刚才讲了什么？" in text
+    assert "附近字幕" in text
+    assert "当前这句" in text
     assert last["content"][1]["type"] == "image_url"
     assert last["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
     # 无图时保持纯文本
     msgs2 = build_qa_messages([{"role": "user", "content": "hi"}])
     assert msgs2[-1]["content"] == "hi"
+
+    # 前端已写入本条时不要再包一层
+    composed = compose_user_content("为啥？", current_subtitle="[00:20:57,000] 这意味着")
+    msgs3 = build_qa_messages(
+        [
+            {"role": "user", "content": compose_user_content(
+                "这个指的是什么", current_subtitle="[00:18:45,000] 旧的一句"
+            )},
+            {"role": "assistant", "content": "先前的回答"},
+            {"role": "user", "content": composed},
+        ],
+        current_subtitle="[00:20:57,000] 这意味着",
+        subtitle_context="[00:20:50,000] 前后文",
+    )
+    users = [m["content"] for m in msgs3 if m["role"] == "user"]
+    assert users[0].count("【当前字幕】") == 1
+    assert "旧的一句" in users[0]
+    assert users[1].count("【当前字幕】") == 1
+    assert "这意味着" in users[1]
+    assert "【当前播放位置前后的字幕】" not in users[1]

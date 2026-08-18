@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Generator
 
 from openai import OpenAI
@@ -64,6 +65,80 @@ def generate_summary(subtitle_text: str) -> str:
     return resp.choices[0].message.content or ""
 
 
+CURRENT_SUBTITLE_HEADER = (
+    "【当前字幕】用户当前停留在这一句；"
+    "用户说“这句话”“这句”时通常指它。"
+)
+SUBTITLE_CONTEXT_HEADER = "【当前播放位置前后的字幕】"
+_TURN_MARKERS = ("【当前字幕】", SUBTITLE_CONTEXT_HEADER)
+
+
+def compose_user_content(
+    question: str,
+    current_subtitle: str | None = None,
+    subtitle_context: str | None = None,
+) -> str:
+    """把当轮指代上下文写进 user 文本：当前句 / 前后文 + 问题本身。"""
+    parts: list[str] = []
+    if current_subtitle:
+        parts.append(f"{CURRENT_SUBTITLE_HEADER}\n{current_subtitle}")
+    if subtitle_context:
+        parts.append(f"{SUBTITLE_CONTEXT_HEADER}\n{subtitle_context}")
+    parts.append(question)
+    return "\n\n".join(parts)
+
+
+def _user_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            str(b.get("text", "")) for b in content if isinstance(b, dict)
+        )
+    return ""
+
+
+def _has_turn_context(content: Any) -> bool:
+    text = _user_text(content)
+    return any(m in text for m in _TURN_MARKERS)
+
+
+def _fmt_upload_date(raw: Any) -> str:
+    if raw is None:
+        return ""
+    s = str(raw).strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        return s
+    if re.fullmatch(r"\d{8}", s):
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return ""
+
+
+def format_video_info(meta: dict | None) -> str | None:
+    """标题 / UP / 发布时间 / 分P。链接、时长等对理解提问没帮助，不写。"""
+    if not meta:
+        return None
+    lines: list[str] = []
+    name = str(meta.get("name") or meta.get("title") or "").strip()
+    if name:
+        lines.append(f"标题：{name}")
+    uploader = str(meta.get("uploader") or "").strip()
+    if uploader:
+        lines.append(f"UP主：{uploader}")
+    date = _fmt_upload_date(meta.get("upload_date"))
+    if date:
+        lines.append(f"发布时间：{date}")
+    try:
+        page = int(meta.get("page") or 1)
+    except (TypeError, ValueError):
+        page = 1
+    if page > 1:
+        lines.append(f"分P：第 {page} 集")
+    if not lines:
+        return None
+    return "【当前视频信息】\n" + "\n".join(lines)
+
+
 def build_qa_messages(
     messages: list[dict],
     summary: str | None = None,
@@ -71,31 +146,35 @@ def build_qa_messages(
     current_subtitle: str | None = None,
     image_b64: str | None = None,
     full_subtitles: str | None = None,
+    video_info: str | None = None,
 ) -> list[dict]:
-    """在多轮 messages 基础上注入总结 / 完整字幕 / 字幕上下文 / 当前帧。
+    """在多轮 messages 上补齐发给模型的完整列表。
 
-    - ``messages``：前端维护的多轮历史（role: user/assistant），最后一条是当前问题。
-    - 总结与字幕上下文以 system/user 补充形式注入，不改动历史。
-    - ``full_subtitles`` 是带时间戳的字幕全文（可能已被调用方截断）；注入完整字幕后
-      一般不再注入 ``subtitle_context``（由调用方取舍），避免内容重复。
-    - ``subtitle_context`` 是当前播放位置前后的若干条字幕；``current_subtitle``
-      是用户当前停留的那一条，单独标注，用户说“这句话/这句”时通常指它。
-    - 图片附加到当前（最后一条）user 消息上，构造多模态消息。
+    - ``messages``：对话历史（role: user/assistant），最后一条是当前问题。
+    - 视频信息 / 总结 / 完整字幕是整段视频的稳定背景，每轮以 system 注入，不写进历史。
+    - 当前字幕 / 前后文是这一问的所指，并进最后一条 user；前端通常已写好，
+      这里仅在尚未带上时补一次（直调 API 的兜底）。
+    - ``full_subtitles`` 过长时由调用方截断；注入全文后一般不再带
+      ``subtitle_context``，避免重复。
+    - 图片附加到当前（最后一条）user 上，构造多模态消息。
     """
     out: list[dict] = [{"role": "system", "content": QA_SYSTEM_PROMPT}]
+    if video_info:
+        out.append({"role": "system", "content": video_info})
     if summary:
         out.append({"role": "system", "content": f"【当前视频总结】\n{summary}"})
     if full_subtitles:
         out.append({"role": "system", "content": f"【视频完整字幕】\n{full_subtitles}"})
-    if subtitle_context:
-        out.append({"role": "system", "content": f"【当前播放位置前后的字幕】\n{subtitle_context}"})
-    if current_subtitle:
-        out.append({"role": "system", "content": (
-            "【当前字幕】用户当前停留在这一句；"
-            f"用户说“这句话”“这句”时通常指它。\n{current_subtitle}"
-        )})
 
     history = [dict(m) for m in messages]
+    if history and (current_subtitle or subtitle_context):
+        last = history[-1]
+        if last.get("role") == "user" and not _has_turn_context(last.get("content")):
+            last["content"] = compose_user_content(
+                _user_text(last.get("content", "")),
+                current_subtitle=current_subtitle,
+                subtitle_context=subtitle_context,
+            )
     if image_b64 and history:
         last = history[-1]
         content = last.get("content", "")

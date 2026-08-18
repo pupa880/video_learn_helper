@@ -1,4 +1,4 @@
-"""AI 问答 API：多轮、总结注入、完整/局部字幕上下文、图片帧，SSE 流式输出。"""
+"""AI 问答 API：多轮、总结/完整字幕作 system 背景、当前字幕写入 user、图片帧，SSE 流式。"""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ class ChatRequest(BaseModel):
     image_b64: str | None = None
     enable_thinking: bool | None = None  # 本次请求是否转发思考过程；None 用全局配置
     include_summary: bool = True         # 是否注入视频总结
+    include_video_info: bool = True      # 是否注入标题 / UP / 发布时间
     include_full_subtitles: bool = False  # 是否注入完整字幕（带时间戳，过长截断）
     subtitle_before: int = 10            # 「发送当前字幕」时附带当前句之前的条数
     subtitle_after: int = 0              # 「发送当前字幕」时附带当前句之后的条数
@@ -36,6 +37,24 @@ class ChatRequest(BaseModel):
 
 # 注入完整字幕的字符上限（与总结生成的截断长度对齐）
 FULL_SUBTITLE_MAX_CHARS = 60000
+
+
+def _sanitize_messages(messages: list[dict]) -> list[dict]:
+    """调试用：回传实际发给模型的列表，图片换成占位避免撑爆 SSE。"""
+    out: list[dict] = []
+    for raw in messages:
+        msg = dict(raw)
+        content = msg.get("content")
+        if isinstance(content, list):
+            blocks = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    blocks.append({"type": "image_url", "image_url": {"url": "[image]"}})
+                else:
+                    blocks.append(block)
+            msg["content"] = blocks
+        out.append(msg)
+    return out
 
 
 class SummaryRequest(BaseModel):
@@ -99,6 +118,9 @@ def chat(req: ChatRequest) -> StreamingResponse:
                     # 首次对话：总结需现场生成（一次完整 LLM 调用），先告知前端
                     yield f"data: {json.dumps({'type': 'status', 'text': '首次对话，正在自动生成视频总结…'}, ensure_ascii=False)}\n\n"
                     summary = _get_summary(req.video_id)
+            video_info = None
+            if req.include_video_info and req.video_id:
+                video_info = llm.format_video_info(state.load_meta(req.video_id))
             messages = llm.build_qa_messages(
                 [m.model_dump() for m in req.messages],
                 summary=summary,
@@ -106,21 +128,21 @@ def chat(req: ChatRequest) -> StreamingResponse:
                 current_subtitle=current_subtitle,
                 image_b64=req.image_b64,
                 full_subtitles=full_subtitles,
+                video_info=video_info,
             )
-            # 把本次实际注入的上下文透传给前端展示（token 消耗透明）
+            # 仅回传未写入历史的 system 背景；当前字幕已在 user 里
             injected = []
+            if video_info:
+                injected.append({"label": "视频信息", "text": video_info})
             if summary:
                 injected.append({"label": "视频总结", "text": summary,
                                  "note": "由字幕自动生成并注入，可在 ⚙ 对话设置中关闭"})
             if full_subtitles:
                 injected.append({"label": "完整字幕", "text": full_subtitles,
                                  "truncated": full_truncated})
-            if subtitle_ctx:
-                injected.append({"label": "当前字幕前后文", "text": subtitle_ctx})
-            if current_subtitle:
-                injected.append({"label": "当前字幕", "text": current_subtitle})
             if injected:
                 yield f"data: {json.dumps({'type': 'context', 'items': injected}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'messages', 'messages': _sanitize_messages(messages)}, ensure_ascii=False)}\n\n"
             for kind, delta in llm.stream_chat(messages, enable_thinking=req.enable_thinking):
                 ev = {"type": "reasoning" if kind == "reasoning" else "delta", "text": delta}
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"

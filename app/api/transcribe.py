@@ -125,7 +125,6 @@ def _transcribe_full(task_id: str, video_id: str) -> None:
         segments = results
 
     cues = [Cue(s, e, t) for s, e, t in segments]
-    state.save_subtitles(video_id, cues)
     for cue in cues:
         _emit(task_id, {"type": "cue", "cue": cue.to_dict()})
     _emit(task_id, {"type": "done", "count": len(cues)})
@@ -143,11 +142,8 @@ def _transcribe_realtime(task_id: str, video_id: str, start_position: float) -> 
     vad = _get_vad()
 
     cursor = max(0.0, start_position)
-    # 从当前进度开始转：保留游标之前已有的字幕，避免把官方字幕/上次结果整份覆盖掉
-    existing = state.load_subtitles(video_id)
-    cues = [c for c in existing if c.start < cursor]
-    if len(cues) != len(existing):
-        state.save_subtitles(video_id, cues)
+    produced = 0
+    # 游标之前的字幕由前端自己保留；这里只产出新段
     _emit(task_id, {"type": "progress", "text": "实时转录已启动"})
 
     while True:
@@ -162,10 +158,7 @@ def _transcribe_realtime(task_id: str, video_id: str, start_position: float) -> 
         # 跳过去会丢掉用户正在听的那一段。只在明显拖动进度条时跟随。
         if abs(position - last_pos) > 5.0:
             cursor = max(0.0, position)
-            cues[:] = [c for c in cues if c.start < cursor]
-            state.save_subtitles(video_id, cues)
-            _emit(task_id, {"type": "trim", "before": cursor,
-                            "cues": [c.to_dict() for c in cues]})
+            _emit(task_id, {"type": "trim", "before": cursor})
         if cursor >= duration:
             break
 
@@ -185,9 +178,8 @@ def _transcribe_realtime(task_id: str, video_id: str, start_position: float) -> 
             finally:
                 tmp.unlink(missing_ok=True)
             if text:
+                produced += 1
                 cue = Cue(abs_start, abs_end, text)
-                cues.append(cue)
-                state.save_subtitles(video_id, cues)
                 _emit(task_id, {"type": "cue", "cue": cue.to_dict()})
         cursor = end
         _emit(task_id, {
@@ -197,7 +189,7 @@ def _transcribe_realtime(task_id: str, video_id: str, start_position: float) -> 
             "percent": round(cursor / duration * 100, 1) if duration else 100,
         })
 
-    _emit(task_id, {"type": "done", "count": len(cues)})
+    _emit(task_id, {"type": "done", "count": produced})
 
 
 def _worker(task_id: str, video_id: str, mode: str, start_position: float) -> None:

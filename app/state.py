@@ -1,11 +1,12 @@
-"""视频会话与后台任务的集中管理。
+"""视频工作缓存与后台任务。
 
-每个视频一个目录 ``data/videos/<id>/``：
-- ``video.mp4``  视频文件（本地上传或 B站 remux 缓存）
-- ``audio.wav``  ffmpeg 抽出的 16kHz 单声道音频（转录用）
-- ``meta.json``  元信息（名称、来源、时长、B站链接等）
-- ``subtitles.json``  字幕缓存
-- ``summary.txt``  AI 视频总结缓存
+用户库（列表、字幕、总结、对话、本地文件）在浏览器 IndexedDB/OPFS。
+后端 ``data/videos/<id>/`` 只是算力/代理用的临时缓存：
+- ``video.*``   转录前暂存的媒体（本地文件上传或 B站 remux）
+- ``audio.wav`` ffmpeg 抽出的 16kHz 单声道音频（转录用）
+- ``meta.json`` 串流地址、清晰度等（CDN 直链会过期）
+- ``hls/``      DASH→HLS 混流分片
+旧版写入的 ``subtitles.json`` / ``summary.txt`` 仅供一次性迁到前端。
 """
 
 from __future__ import annotations
@@ -37,10 +38,15 @@ def new_video_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def _check_video_id(video_id: str) -> str:
+def check_video_id(video_id: str) -> str:
+    """校验 video_id（12 位 hex），非法则抛 InvalidVideoId。"""
     if not _VIDEO_ID_RE.fullmatch(video_id or ""):
         raise InvalidVideoId("非法视频 id")
     return video_id
+
+
+def _check_video_id(video_id: str) -> str:
+    return check_video_id(video_id)
 
 
 def video_dir(video_id: str) -> Path:
@@ -97,6 +103,9 @@ def list_videos() -> list[dict[str, Any]]:
             "name": meta.get("name") or d.name,
             "source": meta.get("source"),
             "url": meta.get("url"),
+            "page": meta.get("page") or 1,
+            "uploader": meta.get("uploader") or "",
+            "upload_date": meta.get("upload_date") or "",
             "duration": meta.get("duration") or 0,
             "has_file": has_file,
             "has_audio": has_audio,
@@ -105,6 +114,26 @@ def list_videos() -> list[dict[str, Any]]:
             "qualities": meta.get("qualities") or [],
         })
     return out
+
+
+def export_library() -> list[dict[str, Any]]:
+    """旧版磁盘用户库快照（含字幕/总结），供前端一次性迁入 IndexedDB。"""
+    items = []
+    for v in list_videos():
+        vid = v["id"]
+        items.append({
+            **v,
+            "cues": [c.to_dict() for c in load_subtitles(vid)],
+            "summary": load_summary(vid),
+        })
+    return items
+
+
+def remove_video(video_id: str) -> None:
+    """删除该 id 的工作缓存目录（用户库由前端删除）。"""
+    d = VIDEOS_DIR / _check_video_id(video_id)
+    if d.is_dir():
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def save_subtitles(video_id: str, cues: list[Cue]) -> None:

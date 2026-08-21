@@ -349,6 +349,35 @@ body.layout-resizing iframe { pointer-events: none; }
   font-size: 12px;
   color: var(--text-dim);
 }
+.rv-del {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.rv-del:hover { color: var(--danger); background: var(--panel-2); }
+.recent-row {
+  display: flex;
+  align-items: stretch;
+}
+.menu .recent-row > button:first-child {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.menu .recent-row .rv-del {
+  width: 32px;
+  height: auto;
+  justify-content: center;
+  padding: 7px 0;
+}
 
 /* ---------- 图标按钮 / 下拉菜单 ---------- */
 
@@ -913,10 +942,16 @@ select { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 12px 10px;
+  padding: 0 12px 10px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
+.composer-gutter {
+  margin: -6px -12px 0;
+  align-self: stretch;
+  width: auto;
+}
+.composer-gutter::after { background: #d3d9e3; }
 .composer-tools { display: flex; gap: 6px; align-items: center; }
 .chip {
   display: inline-flex;
@@ -962,6 +997,8 @@ select { cursor: pointer; }
   flex: 1;
   resize: none;
   line-height: 1.5;
+  min-height: 48px;
+  overflow-y: auto;
 }
 
 /* ---------- 设置面板 ---------- */

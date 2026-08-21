@@ -128,6 +128,35 @@ def test_compose_user_content():
     assert compose_user_content("hi") == "hi"
 
 
+def test_resolve_injections_uses_client_cues():
+    from app.api.chat import resolve_injections
+    from app.services.subtitle import Cue
+
+    cues = [Cue(0, 1, "零"), Cue(2, 3, "一"), Cue(4, 5, "二")]
+    inj = resolve_injections(
+        cues,
+        include_full_subtitles=True,
+        include_subtitles=True,
+        current_time=2.5,
+        subtitle_before=10,
+        subtitle_after=10,
+    )
+    assert "一" in inj["current_subtitle"]
+    assert inj["subtitle_ctx"] is None  # 已注入全文则不再带前后文
+    assert "零" in inj["full_subtitles"] and "二" in inj["full_subtitles"]
+
+    inj2 = resolve_injections(
+        cues,
+        include_full_subtitles=False,
+        include_subtitles=True,
+        current_time=2.5,
+        subtitle_before=1,
+        subtitle_after=1,
+    )
+    assert "一" in inj2["current_subtitle"]
+    assert "零" in inj2["subtitle_ctx"] and "二" in inj2["subtitle_ctx"]
+
+
 def test_build_qa_messages():
     from app.services.llm import build_qa_messages, compose_user_content
 

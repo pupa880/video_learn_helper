@@ -1,11 +1,15 @@
-/* 三栏布局：分割条缩放 + 拖标题互换/贴边重排。状态存 localStorage。 */
+/* 三栏布局：分割条缩放 + 拖标题互换/贴边重排 + 问答输入框高度。状态存 localStorage。 */
 
 const LAYOUT_KEY = 'vlh-layout-v2';
 const HIDDEN_KEY = 'vlh-hidden-panels';
+const COMPOSER_H_KEY = 'vlh-composer-h';
 const LAYOUT_MQ = '(max-width: 900px)';
 const GUTTER_PX = 12;
 const MIN_COL_PX = 280;
 const MIN_ROW_PX = 160;
+const COMPOSER_MIN_H = 48;
+const COMPOSER_ABS_MAX = 720;
+const COMPOSER_MIN_MESSAGES = 96;
 const PANEL_IDS = ['video', 'chat', 'subtitle'];
 
 const DEFAULT_LAYOUT = {
@@ -227,11 +231,134 @@ function applyDockWorkspace(fromId, edge) {
   renderLayout();
 }
 
+let composerH = loadComposerH();
+let composerResizeBound = false;
+
+function loadComposerH() {
+  try {
+    const n = Number(localStorage.getItem(COMPOSER_H_KEY));
+    if (Number.isFinite(n) && n >= COMPOSER_MIN_H) return n;
+  } catch { /* 隐私模式 */ }
+  return null;
+}
+
+function persistComposerH(h) {
+  try {
+    if (h == null) localStorage.removeItem(COMPOSER_H_KEY);
+    else localStorage.setItem(COMPOSER_H_KEY, String(h));
+  } catch { /* 隐私模式 */ }
+}
+
+function composerMaxH() {
+  const region = document.querySelector('.region-chat');
+  const input = document.querySelector('.chat-input');
+  const ta = document.getElementById('chat-text');
+  if (!region || !input || !ta) return Infinity;
+  if (region.classList.contains('panel-hidden') || region.clientHeight < 80) return Infinity;
+  const extra = input.offsetHeight - ta.offsetHeight;
+  const bar = region.querySelector('.region-bar');
+  const inject = document.getElementById('chat-inject');
+  const nosub = document.getElementById('chat-nosub');
+  let reserved = (bar?.offsetHeight || 0) + extra + COMPOSER_MIN_MESSAGES;
+  if (inject && !inject.hidden) reserved += inject.offsetHeight;
+  if (nosub && !nosub.hidden) reserved += nosub.offsetHeight;
+  return Math.max(COMPOSER_MIN_H, Math.min(COMPOSER_ABS_MAX, region.clientHeight - reserved));
+}
+
+function applyComposerH() {
+  const ta = document.getElementById('chat-text');
+  const gutter = document.getElementById('chat-input-gutter');
+  if (!ta) return;
+  if (composerH == null) {
+    ta.style.height = '';
+    if (gutter) gutter.removeAttribute('aria-valuenow');
+    return;
+  }
+  const max = composerMaxH();
+  const clamped = Math.round(Math.min(
+    Number.isFinite(max) ? max : COMPOSER_ABS_MAX,
+    Math.max(COMPOSER_MIN_H, composerH),
+  ));
+  ta.style.height = `${clamped}px`;
+  if (gutter) {
+    gutter.setAttribute('aria-valuemin', String(COMPOSER_MIN_H));
+    gutter.setAttribute('aria-valuemax', String(Number.isFinite(max) ? Math.round(max) : COMPOSER_ABS_MAX));
+    gutter.setAttribute('aria-valuenow', String(clamped));
+  }
+}
+
+function resetComposerH() {
+  composerH = null;
+  persistComposerH(null);
+  applyComposerH();
+}
+
+function initComposerResize() {
+  const gutter = document.getElementById('chat-input-gutter');
+  const ta = document.getElementById('chat-text');
+  if (!gutter || !ta || composerResizeBound) return;
+  composerResizeBound = true;
+
+  applyComposerH();
+
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+  let dragPointerId = null;
+
+  const onMove = (e) => {
+    if (!dragging) return;
+    const max = composerMaxH();
+    const cap = Number.isFinite(max) ? max : COMPOSER_ABS_MAX;
+    composerH = Math.round(Math.min(cap, Math.max(COMPOSER_MIN_H, startH + (startY - e.clientY))));
+    applyComposerH();
+  };
+
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', endDrag);
+    window.removeEventListener('pointercancel', endDrag);
+    if (dragPointerId != null) {
+      try { gutter.releasePointerCapture(dragPointerId); } catch { /* 可能没有捕获 */ }
+    }
+    dragPointerId = null;
+    gutter.classList.remove('dragging');
+    document.body.classList.remove('layout-resizing', 'layout-resizing-row');
+    if (composerH != null) persistComposerH(composerH);
+  };
+
+  gutter.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragPointerId = e.pointerId;
+    try { gutter.setPointerCapture(e.pointerId); } catch { /* 合成事件没有真实指针 */ }
+    dragging = true;
+    startY = e.clientY;
+    startH = ta.offsetHeight;
+    gutter.classList.add('dragging');
+    document.body.classList.add('layout-resizing', 'layout-resizing-row');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+  });
+
+  gutter.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    resetComposerH();
+  });
+
+  window.addEventListener('resize', applyComposerH);
+  window.addEventListener('vlh-layout-change', applyComposerH);
+}
+
 function resetLayout() {
   tree = clone(DEFAULT_LAYOUT);
   hidden = new Set();
   persistTree();
   persistHidden();
+  resetComposerH();
   renderLayout();
   window.dispatchEvent(new Event('vlh-layout-change'));
 }
@@ -272,7 +399,7 @@ function buildSkeleton(node, path) {
 }
 
 function bindGutters(root) {
-  root.querySelectorAll('.gutter').forEach((gutter) => {
+  root.querySelectorAll('.split > .gutter').forEach((gutter) => {
     const path = gutter.dataset.path ? gutter.dataset.path.split('.') : [];
     const node = getNode(tree, path);
     if (!node || node.type !== 'split') return;
@@ -480,6 +607,7 @@ function renderLayout() {
     }
     bindGutters(root);
   }
+  applyComposerH();
   window.dispatchEvent(new Event('resize'));
 }
 
@@ -501,6 +629,7 @@ function initLayout() {
   mq.addEventListener('change', renderLayout);
 
   renderLayout();
+  initComposerResize();
 }
 
 initLayout();

@@ -56,29 +56,84 @@ class BilibiliRequest(BaseModel):
 
 @router.get("/list")
 def list_videos():
+    """工作缓存目录列表（兼容旧前端）。用户库以浏览器 IndexedDB 为准。"""
     return {"videos": state.list_videos()}
 
 
-@router.post("/upload")
-async def upload_video(file: UploadFile):
+@router.get("/export")
+def export_library():
+    """一次性导出旧磁盘用户库（含字幕/总结），供前端迁入 IndexedDB。"""
+    return {"videos": state.export_library()}
+
+
+async def _stage_media(video_id: str, file: UploadFile) -> dict:
+    """把媒体写进工作缓存，供转录等使用。不作为用户库。"""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_SUFFIX:
         raise HTTPException(400, f"不支持的视频格式: {suffix}")
-    video_id = state.new_video_id()
-    dst = state.video_dir(video_id) / f"video{suffix}"
+    video_id = state.check_video_id(video_id)
+    # 清掉旧的 video.*，避免残留其它后缀
+    d = state.video_dir(video_id)
+    for old in d.glob("video.*"):
+        old.unlink(missing_ok=True)
+    dst = d / f"video{suffix}"
     size = 0
     with open(dst, "wb") as f:
         while chunk := await file.read(1 << 20):
             size += len(chunk)
             f.write(chunk)
-    meta = {
-        "name": file.filename,
-        "source": "local",
+    meta = state.load_meta(video_id)
+    meta.update({
+        "name": meta.get("name") or file.filename,
+        "source": meta.get("source") or "local",
         "duration": media.get_duration(dst),
         "size": size,
-    }
+    })
     state.save_meta(video_id, meta)
-    return {"video_id": video_id, **meta}
+    return {
+        "video_id": video_id,
+        "name": meta.get("name"),
+        "duration": meta.get("duration") or 0,
+        "has_file": True,
+        "size": size,
+    }
+
+
+@router.post("/upload")
+async def upload_video(file: UploadFile, video_id: str | None = None):
+    """暂存本地视频（转录用）。可传入前端已有的 video_id。"""
+    return await _stage_media(video_id or state.new_video_id(), file)
+
+
+@router.post("/{video_id}/media")
+async def put_media(video_id: str, file: UploadFile):
+    """按前端库的 id 暂存媒体，供转录抽取音频。"""
+    return await _stage_media(video_id, file)
+
+
+@router.get("/{video_id}/status")
+def video_status(video_id: str):
+    """工作缓存里有没有文件/音频/串流，前端用来决定要不要补传。"""
+    state.check_video_id(video_id)
+    meta = state.load_meta(video_id)
+    return {
+        "id": video_id,
+        "has_file": state.video_path(video_id) is not None,
+        "has_audio": _has_audio(video_id),
+        "has_stream": bool(meta.get("stream")),
+    }
+
+
+@router.delete("/{video_id}")
+def delete_video(video_id: str):
+    """删除工作缓存（HLS 进程、暂存媒体）。用户库由前端自己删。"""
+    state.check_video_id(video_id)
+    with _hls_lock:
+        proc = _hls_procs.pop(video_id, None)
+    if proc:
+        proc.kill()
+    state.remove_video(video_id)
+    return {"ok": True}
 
 
 @router.post("/bilibili/info")
@@ -93,53 +148,46 @@ def bilibili_info(req: BilibiliRequest):
 def bilibili_load(req: BilibiliRequest):
     """解析播放地址并立即返回，播放器直接串流，不下载完整视频。
 
-    传 video_id 时复用已有视频条目（切换清晰度场景）：只更新串流地址，
-    字幕、总结等数据保留。
+    video_id 由前端用户库提供（切换清晰度、再次打开时复用）；
+    未传则后端生成。结果写入工作缓存供代理播放，不是用户库。
     """
-    if req.video_id:
-        meta = state.load_meta(req.video_id)
-        url = req.url or meta.get("url")
-        if not url:
-            raise HTTPException(400, "缺少视频链接")
-        info = bilibili.resolve_stream(url, req.max_height)  # meta 里的 url 已带分P
-        meta["stream"] = {k: info[k] for k in _STREAM_KEYS if k in info}
-        if info.get("qualities"):
-            meta["qualities"] = info["qualities"]
-        meta["duration"] = meta.get("duration") or info.get("duration", 0)
-        if info.get("uploader") and not meta.get("uploader"):
-            meta["uploader"] = info["uploader"]
-        if info.get("upload_date") and not meta.get("upload_date"):
-            meta["upload_date"] = info["upload_date"]
-        state.save_meta(req.video_id, meta)
-        return {"video_id": req.video_id, "name": meta.get("name"), "url": meta.get("url"),
-                "has_file": False, "kind": info["kind"], "height": info.get("height", 0),
-                "duration": meta.get("duration", 0),
-                "has_audio": _has_audio(req.video_id),
-                "qualities": meta.get("qualities") or []}
-
-    if not req.url:
+    video_id = state.check_video_id(req.video_id) if req.video_id else state.new_video_id()
+    meta = state.load_meta(video_id) if req.video_id else {}
+    url = req.url or meta.get("url")
+    if not url:
         raise HTTPException(400, "缺少视频链接")
-    info = bilibili.resolve_stream(req.url, req.max_height, page=req.page)
-    video_id = state.new_video_id()
-    meta = {
-        "name": info.get("title") or "bilibili",
-        "source": "bilibili",
-        # 记录分P后的链接，后续拉字幕/补下载都作用于同一P
-        "url": bilibili.with_page(info.get("webpage_url", req.url), req.page),
-        "page": req.page,
-        "uploader": info.get("uploader", ""),
-        "upload_date": info.get("upload_date", ""),
-        "duration": info.get("duration", 0),
-        # 串流地址（会过期，仅供本次会话播放；转录等场景走下载）
-        "stream": {k: info[k] for k in _STREAM_KEYS if k in info},
-        "qualities": info.get("qualities") or [],
-    }
+    page = req.page or int(meta.get("page") or 1)
+    # 已有分P后的链接时不再套 page（切清晰度只换档）
+    info = bilibili.resolve_stream(url, req.max_height,
+                                   page=page if not meta.get("url") else 1)
+    if not meta.get("name"):
+        meta["name"] = info.get("title") or "bilibili"
+    meta["source"] = "bilibili"
+    meta["url"] = meta.get("url") or bilibili.with_page(info.get("webpage_url", url), page)
+    meta["page"] = meta.get("page") or page
+    if info.get("uploader") and not meta.get("uploader"):
+        meta["uploader"] = info["uploader"]
+    if info.get("upload_date") and not meta.get("upload_date"):
+        meta["upload_date"] = info["upload_date"]
+    meta["duration"] = meta.get("duration") or info.get("duration", 0)
+    meta["stream"] = {k: info[k] for k in _STREAM_KEYS if k in info}
+    if info.get("qualities"):
+        meta["qualities"] = info["qualities"]
     state.save_meta(video_id, meta)
-    return {"video_id": video_id, "name": meta["name"], "url": meta["url"],
-            "has_file": False, "kind": info["kind"], "height": info.get("height", 0),
-            "duration": meta["duration"],
-            "has_audio": False,
-            "qualities": meta["qualities"]}
+    return {
+        "video_id": video_id,
+        "name": meta.get("name"),
+        "url": meta.get("url"),
+        "page": meta.get("page") or 1,
+        "uploader": meta.get("uploader") or "",
+        "upload_date": meta.get("upload_date") or "",
+        "has_file": False,
+        "kind": info["kind"],
+        "height": info.get("height", 0),
+        "duration": meta.get("duration", 0),
+        "has_audio": _has_audio(video_id),
+        "qualities": meta.get("qualities") or [],
+    }
 
 
 @router.post("/bilibili/download")

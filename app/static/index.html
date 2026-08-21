@@ -47,7 +47,7 @@
       <p class="landing-lead">打开一个课程或演讲，边看边问</p>
       <div class="landing-actions">
         <button type="button" id="btn-bili" class="btn primary landing-btn">加载 B站视频</button>
-        <button type="button" id="btn-upload-landing" class="btn landing-btn">上传本地视频</button>
+        <button type="button" id="btn-upload-landing" class="btn landing-btn">打开本地视频</button>
       </div>
       <div id="landing-progress" class="progress" hidden>
         <div class="bar"><div id="landing-bar-inner" class="bar-inner"></div></div>
@@ -72,9 +72,9 @@
             <button type="button" class="icon-btn" id="btn-video-more" title="更多" aria-haspopup="true" aria-expanded="false">⋮</button>
             <div class="menu menu-right" id="menu-video" hidden>
               <button type="button" id="menu-bili">加载 B站视频</button>
-              <button type="button" id="menu-upload-video">上传本地视频</button>
+              <button type="button" id="menu-upload-video">打开本地视频</button>
               <div class="menu-sep"></div>
-              <div class="menu-label">最近视频</div>
+              <div class="menu-label">最近</div>
               <div id="menu-recent"></div>
               <div class="menu-sep"></div>
               <button type="button" id="menu-caption" class="menu-check" aria-checked="true">显示画面字幕</button>
@@ -125,14 +125,17 @@
           <div class="chat-empty">问这节课里没听懂的地方</div>
         </div>
         <div id="chat-nosub" class="chat-nosub" hidden>
-          <p>当前视频没有字幕，AI 看不到里面讲了什么。要结合内容提问，请先转录或上传 SRT；问别的事情可以直接发。</p>
+          <p>当前视频没有字幕，AI 看不到里面讲了什么。要结合内容提问，请先转录或导入 SRT；问别的事情可以直接发。</p>
           <div class="chat-nosub-actions">
-            <button type="button" id="nosub-srt" class="btn small">上传 SRT</button>
+            <button type="button" id="nosub-srt" class="btn small">导入 SRT</button>
             <button type="button" id="nosub-transcribe" class="btn small">开始转录</button>
             <button type="button" id="nosub-dismiss" class="btn small ghost">知道了</button>
           </div>
         </div>
         <div class="chat-input">
+          <div class="gutter gutter-row composer-gutter" id="chat-input-gutter"
+               role="separator" aria-orientation="horizontal" aria-label="调整输入框高度"
+               title="拖动调整输入框高度，双击恢复默认"></div>
           <div class="composer-tools">
             <label class="chip" title="把当前这句字幕一并发给 AI">
               <input type="checkbox" id="chk-subtitles">
@@ -164,7 +167,7 @@
         <div class="menu-wrap">
           <button type="button" class="icon-btn" id="btn-sub-more" title="更多" aria-haspopup="true" aria-expanded="false">⋮</button>
           <div class="menu menu-right" id="menu-sub" hidden>
-            <button type="button" id="menu-srt">上传 SRT</button>
+            <button type="button" id="menu-srt">导入 SRT</button>
             <button type="button" id="menu-bili-sub">拉取 B站官方字幕</button>
             <button type="button" id="menu-transcribe">开始实时转录</button>
             <div class="menu-sep"></div>
@@ -277,7 +280,7 @@
       </div>
       <div class="cs-item">
         <label class="chk"><input type="checkbox" id="cs-summary"> 注入视频总结</label>
-        <div class="cs-desc">把视频的内容总结发给 AI，让它了解整个视频的大致内容。首次注入时若没有现成总结会自动生成一次（之后缓存复用，和「生成视频总结」按钮生成的是同一份）。总结远比完整字幕短，AI 上下文窗口有限或想节省 token 时选这个更合适。</div>
+        <div class="cs-desc">把视频的内容总结发给 AI，让它了解整个视频的大致内容。首次注入时若没有现成总结会自动生成一次（之后缓存复用，和问答菜单里的「视频总结」是同一份）。字幕更新后会作废，需重新生成。总结远比完整字幕短，AI 上下文窗口有限或想节省 token 时选这个更合适。</div>
       </div>
       <div class="cs-item">
         <label class="chk"><input type="checkbox" id="cs-full-subtitles"> 注入完整字幕</label>
@@ -341,6 +344,7 @@
   <script src="/static/vendor/hls.min.js"></script>
   <script src="/static/vendor/dash.all.min.js"></script>
   <script src="/static/layout.js"></script>
+  <script src="/static/storage.js"></script>
   <script src="/static/main.js"></script>
 </body>
 </html>

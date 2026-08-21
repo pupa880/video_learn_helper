@@ -4,8 +4,10 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   videoId: null,
+  video: null,        // 当前用户库记录
   cues: [],
-  messages: [],       // 多轮问答历史 {role, content}
+  summary: null,      // 当前视频总结（用户库）
+  messages: [],       // 当前视频的问答历史 {role, content, ui?}
   config: null,
   transcribeTask: null,
   transcribeMode: null,
@@ -14,8 +16,11 @@ const state = {
   nosubDismissed: false,
   nosubNoted: false,
   kind: null,         // B站串流类型：dash（走 HLS）/ muxed（直接代理）
+  streaming: false,   // B站在线串流（无本地文件）
   hls: null,          // Hls.js 实例，换视频时销毁
   dash: null,         // dash.js 实例，换视频时销毁
+  blobUrl: null,      // 本地文件的 object URL
+  pendingAttach: null, // 重新选择本地文件时要绑回的库记录
 };
 
 // 调试：Console 里 `state.messages`（历史）/ `lastLlmMessages`（含 system 的完整列表）
@@ -143,6 +148,26 @@ function uploadWithProgress(url, formData, onProgress) {
 
 /* ---------- 播放器自定义控制条（不遮挡画面） ---------- */
 
+function persistCuesSoon() {
+  if (!state.videoId) return;
+  clearTimeout(persistCuesSoon._t);
+  persistCuesSoon._t = setTimeout(() => {
+    vlhLibrary.saveCues(state.videoId, state.cues).catch(() => {});
+  }, 400);
+}
+
+async function persistChat() {
+  if (!state.videoId) return;
+  try { await vlhLibrary.saveChat(state.videoId, state.messages); } catch {}
+}
+
+function revokeBlob() {
+  if (state.blobUrl) {
+    URL.revokeObjectURL(state.blobUrl);
+    state.blobUrl = null;
+  }
+}
+
 function togglePlay() {
   const v = $('player');
   if (!state.videoId) return;
@@ -170,6 +195,12 @@ $('player').addEventListener('timeupdate', () => {
 });
 $('player').addEventListener('loadedmetadata', () => {
   $('time-display').textContent = `00:00 / ${fmtTime(videoDuration())}`;
+  const d = $('player').duration;
+  if (state.video && Number.isFinite(d) && d > 0 && !state.video.duration) {
+    state.video.duration = d;
+    state.duration = d;
+    vlhLibrary.saveVideo(state.video).catch(() => {});
+  }
 });
 /* 视频文件加载失败（404/网络/格式不支持）：标题栏给出明确错误 */
 $('player').addEventListener('error', () => {
@@ -262,8 +293,7 @@ function updateComposerCue() {
   el.textContent = `${fmtTime(cue.start)}  ${cue.text}`;
 }
 
-/* 挂载播放源：DASH 串流优先走 dash.js 直读双轨（可随意拖动），失败回退 HLS 混流；
-   本地文件/muxed 代理直接设 src */
+/* 挂载播放源：本地 blob 优先；DASH 串流走 dash.js（失败回退 HLS）；否则走后端文件/代理 */
 function attachSource() {
   const v = $('player');
   if (state.hls) {
@@ -276,7 +306,11 @@ function attachSource() {
   }
   v.removeAttribute('src');
   v.load();
-  if (state.kind === 'dash' && state.needsDownload) {
+  if (state.blobUrl) {
+    v.src = state.blobUrl;
+    return;
+  }
+  if (state.kind === 'dash' && state.streaming) {
     if (window.dashjs) {
       state.dash = dashjs.MediaPlayer().create();
       const mpd = new URL(`/api/video/${state.videoId}/manifest.mpd`, location.origin).href;
@@ -293,7 +327,7 @@ function attachSource() {
     attachHls(v);
     return;
   }
-  v.src = `/api/video/${state.videoId}/file?t=${Date.now()}`;
+  if (state.videoId) v.src = `/api/video/${state.videoId}/file?t=${Date.now()}`;
 }
 
 function attachHls(v) {
@@ -307,76 +341,85 @@ function attachHls(v) {
   }
 }
 
-function setVideo(videoId, name, opts = {}) {
+function stopTranscribeTask() {
+  if (!state.transcribeTask) return;
+  api('/api/transcribe/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_id: state.transcribeTask }),
+  }).catch(() => {});
+  state.transcribeTask = null;
+  state.transcribeMode = null;
+}
+
+async function setVideo(rec, opts = {}) {
   // 换视频时停掉进行中的转录，避免旧任务的字幕串入新视频
-  if (state.transcribeTask) {
-    api('/api/transcribe/stop', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: state.transcribeTask }),
-    }).catch(() => {});
-    state.transcribeTask = null;
-    state.transcribeMode = null;
-  }
+  stopTranscribeTask();
+  if (state.videoId && state.videoId !== rec.id) await persistChat();
   transcribeProgress.hide();
+  landingProgress.hide();
+  videoProgress.hide();
   setHint('transcribe-status', '');
-  state.videoId = videoId;
-  state.videoUrl = opts.url || null;
-  state.needsDownload = !!opts.needsDownload;
-  state.hasAudio = !!opts.hasAudio;
-  state.duration = opts.duration || 0;
-  state.kind = opts.kind || null;
-  state.qualities = opts.qualities || null;
-  state.height = opts.height || 0;
-  state.cues = [];
-  attachSource();
-  $('time-display').textContent = `00:00 / ${fmtTime(state.duration)}`;
-  setHint('video-title', name || '');
-  $('btn-summary').disabled = false;
-  setTip('btn-summary', '');
-  updateSubtitleControls();
+  revokeBlob();
+
+  state.video = rec;
+  state.videoId = rec.id;
+  state.videoUrl = rec.url || null;
+  state.streaming = rec.source === 'bilibili';
+  state.hasAudio = !!rec.backendAudio;
+  state.duration = rec.duration || opts.duration || 0;
+  state.kind = opts.kind || rec.kind || null;
+  state.qualities = opts.qualities || rec.qualities || null;
+  state.height = opts.height || rec.height || 0;
+  state.blobUrl = opts.blobUrl || null;
+  if (state.blobUrl) state.streaming = false;
+  state.cues = await vlhLibrary.getCues(rec.id);
+  state.summary = await vlhLibrary.getSummary(rec.id);
+  state.messages = await vlhLibrary.getChat(rec.id);
   state.nosubDismissed = false;
   state.nosubNoted = false;
+
+  attachSource();
+  $('time-display').textContent = `00:00 / ${fmtTime(state.duration)}`;
+  setHint('video-title', rec.name || '');
+  renderChatFromState();
+  updateSubtitleControls();
   updateQualitySelect();
   renderSubtitles();
   updateVideoCaption();
   updateComposerCue();
   updateNoSubHint();
   setWorkspace(true);
-  // B站视频：加载后自动拉取官方字幕（已有缓存字幕时不重复拉）
-  loadSubtitles().then(() => {
-    if (opts.autoSubtitles && !state.cues.length) autoLoadBiliSubtitle();
-    updateVideoCaption();
-    updateComposerCue();
-  });
+  if (opts.autoSubtitles && rec.source === 'bilibili' && !state.cues.length) {
+    autoLoadBiliSubtitle();
+  }
   refreshRecentVideos();
 }
 
-function closeVideo() {
-  if (state.transcribeTask) {
-    api('/api/transcribe/stop', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: state.transcribeTask }),
-    }).catch(() => {});
-    state.transcribeTask = null;
-    state.transcribeMode = null;
-  }
+async function closeVideo() {
+  stopTranscribeTask();
+  await persistChat();
   const v = $('player');
   v.pause();
   if (state.hls) { state.hls.destroy(); state.hls = null; }
   if (state.dash) { state.dash.destroy(); state.dash = null; }
   v.removeAttribute('src');
   v.load();
+  revokeBlob();
   state.videoId = null;
+  state.video = null;
   state.cues = [];
+  state.summary = null;
+  state.messages = [];
   state.nosubDismissed = false;
   state.nosubNoted = false;
   state.kind = null;
-  state.needsDownload = false;
+  state.streaming = false;
+  state.hasAudio = false;
+  renderChatFromState();
   setHint('video-title', '');
   $('btn-summary').disabled = true;
-  setTip('btn-summary', '请先加载视频');
+  setTip('btn-summary', '请先打开视频');
   renderSubtitles();
   updateVideoCaption();
   updateComposerCue();
@@ -385,11 +428,11 @@ function closeVideo() {
   refreshRecentVideos();
 }
 
-/* 控制条清晰度选择：仅 B站串流（未下载到本地）且有解析到的档位时显示 */
+/* 控制条清晰度选择：仅 B站在线串流且有解析到的档位时显示 */
 function updateQualitySelect() {
   const sel = $('quality-select');
   const q = state.qualities;
-  if (!state.videoId || !state.needsDownload || !q?.length) {
+  if (!state.videoId || !state.streaming || !q?.length) {
     sel.hidden = true;
     return;
   }
@@ -415,6 +458,12 @@ $('quality-select').addEventListener('change', async (e) => {
     state.height = data.height;
     state.kind = data.kind;
     if (data.qualities?.length) state.qualities = data.qualities;
+    if (state.video) {
+      state.video.height = data.height;
+      state.video.kind = data.kind;
+      if (data.qualities?.length) state.video.qualities = data.qualities;
+      vlhLibrary.saveVideo(state.video).catch(() => {});
+    }
     const resume = () => {
       v.currentTime = t;
       if (playing) v.play();
@@ -442,26 +491,35 @@ async function autoLoadBiliSubtitle() {
 
 $('file-video').addEventListener('change', async (e) => {
   const file = e.target.files[0];
-  if (!file) return;
-  const fd = new FormData();
-  fd.append('file', file);
-  const onLanding = !document.body.classList.contains('has-video');
-  const prog = onLanding ? landingProgress : videoProgress;
-  if (!onLanding) setHint('video-title', `上传中：${file.name}`);
-  prog.update(0, '上传中 0%');
-  try {
-    const data = await uploadWithProgress('/api/video/upload', fd, (pct) => {
-      if (pct >= 100) prog.update(null, '上传完成，处理中…');
-      else prog.update(pct, `上传中 ${Math.floor(pct)}%`);
-    });
-    prog.hide();
-    setVideo(data.video_id, data.name);
-  } catch (err) {
-    prog.hide();
-    if (onLanding) landingProgress.update(null, `上传失败：${err.message}`);
-    else setHint('video-title', `上传失败：${err.message}`, true);
-  }
   e.target.value = '';
+  if (!file) return;
+  let rec = state.pendingAttach;
+  state.pendingAttach = null;
+  if (!rec) {
+    rec = {
+      id: vlhLibrary.newId(),
+      name: file.name,
+      source: 'local',
+      fileName: file.name,
+      duration: 0,
+    };
+  }
+  rec.hasLocalFile = true;
+  rec.fileName = rec.fileName || file.name;
+  rec.name = rec.name || file.name;
+  try {
+    await vlhLibrary.saveVideo(rec);
+  } catch (err) {
+    console.warn('用户库写入失败，本次仍可播放', err);
+  }
+  vlhLibrary.saveLocalFile(rec.id, file).then(() => {
+    rec.hasLocalFile = true;
+    vlhLibrary.saveVideo(rec).catch(() => {});
+  }).catch((err) => {
+    rec.hasLocalFile = false;
+    console.warn('本地视频写入浏览器存储失败', err);
+  });
+  await setVideo(rec, { blobUrl: URL.createObjectURL(file) });
 });
 
 /* ---------- B站加载弹窗：解析一次拿到标题/分P/清晰度，再选在线播放或下载 ---------- */
@@ -562,27 +620,55 @@ function biliRequestBody() {
   };
 }
 
-/* 秒开：只解析播放地址，直接串流播放，不下载完整视频 */
+function biliKey(url, page) {
+  const bv = (url || '').match(/BV[\w]+/i);
+  return `${(bv ? bv[0] : (url || '')).toLowerCase()}#${page || 1}`;
+}
+
+async function findBiliRecord(url, page) {
+  const key = biliKey(url, page);
+  const list = await vlhLibrary.listVideos();
+  return list.find((v) => v.source === 'bilibili' && biliKey(v.url, v.page) === key) || null;
+}
+
+/* 秒开：只解析播放地址，直接串流播放；同一 BV+分P 复用用户库记录 */
 $('btn-bili-stream').addEventListener('click', async () => {
   if (!biliState.info) return;
   $('btn-bili-stream').disabled = true;
   setHint('bili-modal-status', '获取播放地址…');
   try {
+    const body = biliRequestBody();
+    const info = biliState.info;
+    let rec = await findBiliRecord(info.webpage_url || body.url, body.page);
+    if (!rec && info.bvid) rec = await findBiliRecord(info.bvid, body.page);
+    if (!rec) rec = { id: vlhLibrary.newId(), source: 'bilibili', page: body.page };
     const data = await api('/api/video/bilibili/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(biliRequestBody()),
+      body: JSON.stringify({ ...body, video_id: rec.id }),
     });
-    $('bili-modal').hidden = true;
-    setVideo(data.video_id, data.name, {
-      needsDownload: !data.has_file,
+    rec = {
+      ...rec,
+      id: data.video_id,
+      name: data.name,
+      source: 'bilibili',
       url: data.url,
-      autoSubtitles: true,
+      page: data.page || body.page,
+      uploader: data.uploader || rec.uploader || '',
+      upload_date: data.upload_date || rec.upload_date || '',
       duration: data.duration,
-      qualities: data.qualities || biliState.info.qualities,
-      height: data.height,
       kind: data.kind,
-      hasAudio: data.has_audio,
+      height: data.height,
+      qualities: data.qualities || biliState.info.qualities || [],
+      backendAudio: data.has_audio || rec.backendAudio,
+    };
+    await vlhLibrary.saveVideo(rec);
+    $('bili-modal').hidden = true;
+    await setVideo(rec, {
+      autoSubtitles: true,
+      kind: data.kind,
+      qualities: rec.qualities,
+      height: rec.height,
     });
   } catch (err) {
     setHint('bili-modal-status', `失败：${err.message}`, true);
@@ -625,25 +711,33 @@ async function downloadCurrentAudio() {
 }
 
 async function openRecent(v) {
-  if (v.source === 'bilibili' && !v.has_file) {
-    const onLanding = !document.body.classList.contains('has-video');
+  const onLanding = !document.body.classList.contains('has-video');
+  if (v.source === 'bilibili') {
     if (onLanding) landingProgress.update(null, '正在打开…');
     try {
       const data = await api('/api/video/bilibili/load', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_id: v.id, url: v.url || '' }),
+        body: JSON.stringify({
+          video_id: v.id,
+          url: v.url || '',
+          max_height: v.height || 720,
+          page: v.page || 1,
+        }),
       });
       if (onLanding) landingProgress.hide();
-      setVideo(data.video_id, data.name, {
-        needsDownload: !data.has_file,
-        url: data.url,
+      v.kind = data.kind;
+      v.height = data.height;
+      v.qualities = data.qualities || v.qualities;
+      v.duration = data.duration || v.duration;
+      v.url = data.url || v.url;
+      v.backendAudio = data.has_audio || v.backendAudio;
+      await vlhLibrary.saveVideo(v);
+      await setVideo(v, {
         autoSubtitles: true,
-        duration: data.duration,
-        height: data.height,
         kind: data.kind,
-        qualities: data.qualities || v.qualities,
-        hasAudio: data.has_audio || v.has_audio,
+        qualities: v.qualities,
+        height: data.height,
       });
     } catch (err) {
       if (onLanding) landingProgress.update(null, `加载失败：${err.message}`);
@@ -651,20 +745,28 @@ async function openRecent(v) {
     }
     return;
   }
-  setVideo(v.id, v.name, {
-    duration: v.duration,
-    kind: v.has_file ? null : v.kind,
-    needsDownload: !v.has_file,
-    hasAudio: v.has_audio,
-    qualities: v.qualities,
-  });
+  const file = await vlhLibrary.getLocalFile(v.id);
+  if (file) {
+    await setVideo(v, { blobUrl: URL.createObjectURL(file) });
+    return;
+  }
+  if (v.backendFile) {
+    await setVideo(v, {});
+    return;
+  }
+  state.pendingAttach = v;
+  if (!confirm(`「${v.name}」的视频文件不在这个浏览器里了（换过浏览器或清过站点数据）。请重新选择原文件。`)) {
+    state.pendingAttach = null;
+    return;
+  }
+  $('file-video').click();
 }
 
 function dedupeVideos(videos) {
   const seen = new Set();
   const out = [];
   for (const v of videos) {
-    const key = v.url || `${v.source || ''}:${v.name}`;
+    const key = v.source === 'bilibili' && v.url ? biliKey(v.url, v.page) : v.id;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(v);
@@ -672,16 +774,36 @@ function dedupeVideos(videos) {
   return out;
 }
 
+async function removeFromLibrary(v, ev) {
+  ev?.stopPropagation();
+  ev?.preventDefault();
+  if (!confirm(`移除「${v.name || v.id}」？字幕、总结和对话会一起从这个浏览器删掉。`)) return;
+  if (state.videoId === v.id) await closeVideo();
+  await vlhLibrary.deleteVideo(v.id);
+  api(`/api/video/${v.id}`, { method: 'DELETE' }).catch(() => {});
+  refreshRecentVideos();
+}
+
+function makeRemoveBtn(v) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'rv-del';
+  btn.title = '从列表移除';
+  btn.setAttribute('aria-label', '从列表移除');
+  btn.textContent = '×';
+  btn.addEventListener('click', (e) => removeFromLibrary(v, e));
+  return btn;
+}
+
 async function refreshRecentVideos() {
   try {
-    const { videos } = await api('/api/video/list');
-    const unique = dedupeVideos(videos);
+    const videos = dedupeVideos(await vlhLibrary.listVideos());
     const landing = $('landing-recent');
     const landingList = $('landing-recent-list');
     const menu = $('menu-recent');
     landingList.innerHTML = '';
     menu.innerHTML = '';
-    if (!unique.length) {
+    if (!videos.length) {
       landing.hidden = true;
       const empty = document.createElement('div');
       empty.className = 'menu-empty';
@@ -690,7 +812,7 @@ async function refreshRecentVideos() {
       return;
     }
     landing.hidden = false;
-    for (const v of unique.slice(0, 8)) {
+    for (const v of videos.slice(0, 12)) {
       const li = document.createElement('li');
       const name = document.createElement('span');
       name.className = 'rv-name';
@@ -698,15 +820,18 @@ async function refreshRecentVideos() {
       const meta = document.createElement('span');
       meta.className = 'rv-meta';
       meta.textContent = v.duration ? fmtTime(v.duration) : '';
-      li.append(name, meta);
+      li.append(name, meta, makeRemoveBtn(v));
       li.addEventListener('click', () => openRecent(v));
       landingList.append(li);
 
+      const row = document.createElement('div');
+      row.className = 'recent-row';
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = (v.name || v.id).slice(0, 36);
       btn.addEventListener('click', () => openRecent(v));
-      menu.append(btn);
+      row.append(btn, makeRemoveBtn(v));
+      menu.append(row);
     }
   } catch {}
 }
@@ -722,7 +847,7 @@ function renderSubtitles() {
     li.className = 'empty';
     li.textContent = state.videoId
       ? '暂无字幕，点右上角 ⋮ 加载'
-      : '加载视频后可在此查看和定位字幕';
+      : '打开视频后可在此查看和定位字幕';
     list.appendChild(li);
     updateNoSubHint();
     return;
@@ -739,6 +864,9 @@ function renderSubtitles() {
 
 function appendCue(cue) {
   state.cues.push(cue);
+  persistCuesSoon();
+  const empty = $('subtitle-list').querySelector('li.empty');
+  if (empty) empty.remove();
   const li = document.createElement('li');
   li.dataset.index = state.cues.length - 1;
   li.innerHTML = `<span class="ts">${fmtTime(cue.start)}</span>${escapeHtml(cue.text)}`;
@@ -754,15 +882,9 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-async function loadSubtitles() {
+async function saveCuesNow() {
   if (!state.videoId) return;
-  try {
-    const { cues } = await api(`/api/subtitle/${state.videoId}`);
-    state.cues = cues;
-    renderSubtitles();
-    updateVideoCaption();
-    updateComposerCue();
-  } catch {}
+  try { await vlhLibrary.saveCues(state.videoId, state.cues); } catch {}
 }
 
 /* 用户手动滚动/触摸后暂停自动跟随，4 秒无操作恢复 */
@@ -812,20 +934,20 @@ $('player').addEventListener('timeupdate', () => {
 
 $('file-srt').addEventListener('change', async (e) => {
   const file = e.target.files[0];
-  if (!file || !state.videoId) return setHint('transcribe-status', '请先加载视频', true);
+  if (!file || !state.videoId) return setHint('transcribe-status', '请先打开视频', true);
   const fd = new FormData();
   fd.append('file', file);
   try {
-    const resp = await fetch(`/api/subtitle/upload?video_id=${state.videoId}`, { method: 'POST', body: fd });
-    if (!resp.ok) throw new Error((await resp.json()).detail || '上传失败');
-    const data = await resp.json();
+    const data = await api('/api/subtitle/parse', { method: 'POST', body: fd });
     state.cues = data.cues;
+    invalidateSummary();
+    await saveCuesNow();
     renderSubtitles();
     updateVideoCaption();
     updateComposerCue();
-    setHint('transcribe-status', `已加载 ${data.cues.length} 条字幕`);
+    setHint('transcribe-status', `已导入 ${data.cues.length} 条字幕`);
   } catch (err) {
-    setHint('transcribe-status', `SRT 上传失败：${err.message}`, true);
+    setHint('transcribe-status', `SRT 导入失败：${err.message}`, true);
   }
   e.target.value = '';
 });
@@ -852,15 +974,18 @@ $('btn-export-srt').addEventListener('click', () => {
 });
 
 async function loadBilibiliSubtitle() {
-  if (!state.videoId) return;
+  const url = state.videoUrl || state.video?.url;
+  if (!url) return setHint('transcribe-status', '当前不是 B站视频', true);
   transcribeProgress.update(null, '拉取 B站官方字幕中…');
   try {
     const data = await api('/api/subtitle/bilibili', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ video_id: state.videoId }),
+      body: JSON.stringify({ url }),
     });
     state.cues = data.cues;
+    invalidateSummary();
+    await saveCuesNow();
     renderSubtitles();
     updateVideoCaption();
     updateComposerCue();
@@ -877,25 +1002,55 @@ async function loadBilibiliSubtitle() {
 function updateSubtitleControls() {
   const c = state.config;
   const busy = !!state.transcribeTask;
+  const isBili = state.video?.source === 'bilibili';
   $('btn-transcribe-stop').hidden = !busy;
-  $('menu-transcribe').disabled = busy || !c?.asr_available;
-  $('menu-bili-sub').disabled = !c?.bilibili.cookies_uploaded;
-  $('menu-srt').disabled = busy;
-  $('menu-transcribe').title = !c?.asr_available ? '需安装 ASR 依赖组' : '';
-  $('menu-bili-sub').title = !c?.bilibili.cookies_uploaded ? '需上传 B站 cookies' : '';
+  $('menu-transcribe').disabled = busy || !state.videoId || !c?.asr_available;
+  $('menu-bili-sub').disabled = !isBili || !c?.bilibili.cookies_uploaded;
+  $('menu-srt').disabled = busy || !state.videoId;
+  $('menu-transcribe').title = !state.videoId ? '请先打开视频'
+    : !c?.asr_available ? '需安装 ASR 依赖组' : '';
+  $('menu-bili-sub').title = !isBili ? '仅 B站视频可拉取官方字幕'
+    : !c?.bilibili.cookies_uploaded ? '需上传 B站 cookies' : '';
+}
+
+async function ensureBackendMedia() {
+  const st = await api(`/api/video/${state.videoId}/status`).catch(() => null);
+  if (st?.has_audio || st?.has_file) {
+    state.hasAudio = !!st.has_audio;
+    return;
+  }
+  if (state.streaming) {
+    if (!confirm('转录需要先下载音频（不影响继续播放）。开始吗？')) {
+      throw new Error('cancelled');
+    }
+    await downloadCurrentAudio();
+    if (state.video) {
+      state.video.backendAudio = true;
+      await vlhLibrary.saveVideo(state.video);
+    }
+    return;
+  }
+  const file = await vlhLibrary.getLocalFile(state.videoId);
+  if (!file) {
+    throw new Error('找不到本地视频文件，请重新选择后再转录');
+  }
+  const fd = new FormData();
+  fd.append('file', file, state.video?.fileName || 'video.mp4');
+  transcribeProgress.update(0, '正在发送视频以便转录…');
+  await uploadWithProgress(`/api/video/${state.videoId}/media`, fd, (pct) => {
+    transcribeProgress.update(pct, `发送视频 ${Math.floor(pct)}%`);
+  });
 }
 
 async function startTranscribe(mode) {
   if (!state.videoId) return;
-  // 在线串流的视频没有本地文件，转录前需补下载音频（已下载过则跳过）
-  if (state.needsDownload && !state.hasAudio) {
-    if (!confirm('转录需要先把音频下载到本地（只下载音频，可继续在线播放），现在开始吗？')) return;
-    try {
-      await downloadCurrentAudio();
-    } catch (err) {
-      setHint('transcribe-status', `音频下载失败：${err.message}`, true);
-      return;
-    }
+  try {
+    await ensureBackendMedia();
+  } catch (err) {
+    if (err.message === 'cancelled') return;
+    setHint('transcribe-status', `转录准备失败：${err.message}`, true);
+    transcribeProgress.hide();
+    return;
   }
   // 实时：保留当前进度之前的字幕；整段：清空后重来，避免和旧字幕叠在一起
   if (mode === 'realtime') {
@@ -904,6 +1059,8 @@ async function startTranscribe(mode) {
   } else {
     state.cues = [];
   }
+  invalidateSummary();
+  saveCuesNow();
   renderSubtitles();
   updateVideoCaption();
   updateComposerCue();
@@ -936,7 +1093,8 @@ async function startTranscribe(mode) {
       if (state.transcribeTask !== task_id) return;
       if (ev.type === 'progress') transcribeProgress.update(ev.percent ?? null, ev.text);
       else if (ev.type === 'trim') {
-        state.cues = ev.cues || state.cues.filter((c) => c.start < ev.before);
+        state.cues = state.cues.filter((c) => c.start < ev.before);
+        persistCuesSoon();
         renderSubtitles();
         updateVideoCaption();
         updateComposerCue();
@@ -944,7 +1102,8 @@ async function startTranscribe(mode) {
       else if (ev.type === 'cue') appendCue(ev.cue);
       else if (ev.type === 'done') {
         transcribeProgress.hide();
-        setHint('transcribe-status', `转录完成，共 ${ev.count} 条`);
+        saveCuesNow();
+        setHint('transcribe-status', `转录完成，共 ${state.cues.length} 条`);
         state.transcribeTask = null;
         updateSubtitleControls();
       } else if (ev.type === 'error') {
@@ -991,17 +1150,35 @@ function updateNoSubHint() {
   if (!state.cues.length) subChip.checked = false;
   subChip.parentElement.title = state.cues.length
     ? '把当前这句字幕一并发给 AI'
-    : '当前没有字幕，可先转录或上传 SRT';
+    : '当前没有字幕，可先转录或导入 SRT';
   $('btn-summary').disabled = !state.videoId || !state.cues.length;
+  $('btn-summary').textContent = state.summary ? '查看视频总结' : '生成视频总结';
   setTip('btn-summary',
-    !state.videoId ? '请先加载视频'
+    !state.videoId ? '请先打开视频'
       : !state.cues.length ? '需要先有字幕才能生成总结'
         : '');
   updateComposerCue();
   updateChatInjectHint();
 }
 
+function invalidateSummary() {
+  state.summary = null;
+  if (state.videoId) vlhLibrary.saveSummary(state.videoId, null).catch(() => {});
+}
+
 /* ---------- AI 问答 ---------- */
+
+function renderChatFromState() {
+  $('chat-messages').querySelectorAll('.msg').forEach((el) => el.remove());
+  for (const m of state.messages) {
+    if (m.role === 'user') {
+      if (m.ui) addUserMessage(m.ui.text, m.ui);
+      else addMessage('user', m.content);
+    } else if (m.role === 'assistant') {
+      addMessage('assistant', m.content);
+    }
+  }
+}
 
 function addMessage(role, text) {
   const div = document.createElement('div');
@@ -1284,19 +1461,24 @@ async function sendChat() {
 
   if (state.videoId && !state.cues.length && !state.nosubNoted) {
     state.nosubNoted = true;
-    addMessage('system-note', '当前视频没有字幕，这次提问不会带上视频内容。要结合讲解来问，请先转录或上传 SRT。');
+    addMessage('system-note', '当前视频没有字幕，这次提问不会带上视频内容。要结合讲解来问，请先转录或导入 SRT。');
   }
 
   const curTime = $('player').currentTime || 0;
   const turn = collectTurnSubtitles(curTime);
   const image = $('chk-frame').checked ? captureFrame() : null;
   const userContent = composeUserContent(text, turn);
-  const userDiv = addUserMessage(text, {
+  addUserMessage(text, {
     currentText: turn.current,
     windowText: turn.window,
     image,
   });
-  state.messages.push({ role: 'user', content: userContent });
+  state.messages.push({
+    role: 'user',
+    content: userContent,
+    ui: { text, currentText: turn.current, windowText: turn.window },
+  });
+  persistChat();
 
   const assistantDiv = addPendingAssistant();
   const contentEl = mdContainer(assistantDiv);
@@ -1314,9 +1496,18 @@ async function sendChat() {
   state.sending = true;
   $('btn-send').disabled = true;
   try {
+    const v = state.video || {};
     const payload = {
-      messages: state.messages.slice(-20),
-      video_id: state.videoId,
+      messages: state.messages.slice(-20).map(({ role, content }) => ({ role, content })),
+      cues: state.cues,
+      summary: chatCtx.summary ? (state.summary || null) : null,
+      video_meta: chatCtx.videoInfo ? {
+        name: v.name || $('video-title').textContent,
+        uploader: v.uploader,
+        upload_date: v.upload_date,
+        page: v.page,
+        source: v.source,
+      } : null,
       include_subtitles: $('chk-subtitles').checked,
       current_time: curTime,
       image_b64: image,
@@ -1339,6 +1530,9 @@ async function sendChat() {
         if (statusEl) statusEl.textContent = ev.text;
       } else if (ev.type === 'messages') {
         window.lastLlmMessages = ev.messages;
+      } else if (ev.type === 'summary') {
+        state.summary = ev.text;
+        if (state.videoId) vlhLibrary.saveSummary(state.videoId, ev.text).catch(() => {});
       } else if (ev.type === 'reasoning') {
         showAnswer();
         if (!thinkEl) {
@@ -1366,8 +1560,10 @@ async function sendChat() {
         contentEl.textContent = `错误：${ev.text}`;
       }
     });
-    if (full) state.messages.push({ role: 'assistant', content: full });
-    else if (!revealed) showAnswer();
+    if (full) {
+      state.messages.push({ role: 'assistant', content: full });
+      persistChat();
+    } else if (!revealed) showAnswer();
   } catch (err) {
     showAnswer();
     contentEl.classList.add('error');
@@ -1386,11 +1582,16 @@ $('chat-text').addEventListener('keydown', (e) => {
 
 $('btn-clear-chat').addEventListener('click', () => {
   state.messages = [];
-  $('chat-messages').querySelectorAll('.msg').forEach((el) => el.remove());
+  persistChat();
+  renderChatFromState();
 });
 
 $('btn-summary').addEventListener('click', async () => {
   if (!state.videoId) return;
+  if (state.summary) {
+    addMessage('assistant', `【视频总结】\n${state.summary}`);
+    return;
+  }
   $('btn-summary').disabled = true;
   const note = addMessage('system-note', '正在生成视频总结');
   note.classList.add('waiting');
@@ -1398,8 +1599,10 @@ $('btn-summary').addEventListener('click', async () => {
     const data = await api('/api/chat/summary', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ video_id: state.videoId }),
+      body: JSON.stringify({ cues: state.cues }),
     });
+    state.summary = data.summary;
+    await vlhLibrary.saveSummary(state.videoId, data.summary);
     note.remove();
     addMessage('assistant', `【视频总结】\n${data.summary}`);
   } catch (err) {
@@ -1508,7 +1711,7 @@ function applyConfig() {
   $('chk-frame').parentElement.title = c.llm.supports_image
     ? ''
     : `当前提供商（${c.llm.provider}）的模型不支持图像识别，无法发送视频帧`;
-  setTip('btn-summary', state.videoId ? '' : '请先加载视频');
+  setTip('btn-summary', state.videoId ? '' : '请先打开视频');
   updateSubtitleControls();
   updateNoSubHint();
 }
@@ -1760,15 +1963,15 @@ $('menu-upload-video').addEventListener('click', () => $('file-video').click());
 $('menu-bili').addEventListener('click', openBiliModal);
 $('menu-close-video').addEventListener('click', closeVideo);
 $('menu-srt').addEventListener('click', () => {
-  if (!state.videoId) return setHint('transcribe-status', '请先加载视频', true);
+  if (!state.videoId) return setHint('transcribe-status', '请先打开视频', true);
   $('file-srt').click();
 });
 $('menu-bili-sub').addEventListener('click', () => {
-  if (!state.videoId) return setHint('transcribe-status', '请先加载视频', true);
+  if (!state.videoId) return setHint('transcribe-status', '请先打开视频', true);
   loadBilibiliSubtitle();
 });
 $('menu-transcribe').addEventListener('click', () => {
-  if (!state.videoId) return setHint('transcribe-status', '请先加载视频', true);
+  if (!state.videoId) return setHint('transcribe-status', '请先打开视频', true);
   startTranscribe('realtime');
 });
 
@@ -1777,11 +1980,11 @@ $('menu-caption').addEventListener('click', () => setCaptionOn(!captionPref.on))
 $('chk-subtitles').addEventListener('change', updateComposerCue);
 
 $('nosub-srt').addEventListener('click', () => {
-  if (!state.videoId) return setHint('transcribe-status', '请先加载视频', true);
+  if (!state.videoId) return setHint('transcribe-status', '请先打开视频', true);
   $('file-srt').click();
 });
 $('nosub-transcribe').addEventListener('click', () => {
-  if (!state.videoId) return setHint('transcribe-status', '请先加载视频', true);
+  if (!state.videoId) return setHint('transcribe-status', '请先打开视频', true);
   startTranscribe('realtime');
 });
 $('nosub-dismiss').addEventListener('click', () => {
@@ -1813,10 +2016,45 @@ document.addEventListener('keydown', (e) => {
   for (const id of ['provider-modal', 'settings-modal', 'bili-modal', 'chat-settings-modal']) $(id).hidden = true;
 });
 
+async function migrateLibrary() {
+  const FLAG = 'vlh-lib-migrated-v1';
+  try {
+    if (localStorage.getItem(FLAG)) return;
+  } catch { /* 隐私模式仍尝试按库是否为空决定 */ }
+  const existing = await vlhLibrary.listVideos();
+  if (existing.length) {
+    try { localStorage.setItem(FLAG, '1'); } catch {}
+    return;
+  }
+  const { videos } = await api('/api/video/export');
+  for (const v of videos || []) {
+    await vlhLibrary.saveVideo({
+      id: v.id,
+      name: v.name,
+      source: v.source || (v.url ? 'bilibili' : 'local'),
+      url: v.url || '',
+      page: v.page || 1,
+      uploader: v.uploader || '',
+      upload_date: v.upload_date || '',
+      duration: v.duration || 0,
+      qualities: v.qualities || [],
+      height: v.height || 0,
+      kind: v.kind || null,
+      backendFile: !!v.has_file,
+      backendAudio: !!v.has_audio,
+    });
+    if (v.cues?.length) await vlhLibrary.saveCues(v.id, v.cues);
+    if (v.summary) await vlhLibrary.saveSummary(v.id, v.summary);
+  }
+  try { localStorage.setItem(FLAG, '1'); } catch {}
+}
+
 syncCaptionUI();
 syncPanelMenu();
 renderSubtitles();
-refreshRecentVideos();
+migrateLibrary()
+  .catch((err) => console.warn('用户库迁移失败', err))
+  .finally(() => refreshRecentVideos());
 loadConfig().catch((err) => {
   setHint('video-title', `配置加载失败：${err.message}，请刷新页面重试`, true);
 });

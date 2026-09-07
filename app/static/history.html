@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>最近播放 — 视频学习助手</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="history-page">
+  <header>
+    <div class="brand">
+      <a href="/" class="logo" aria-label="返回首页">▶</a>
+      <h1>最近播放</h1>
+    </div>
+    <div class="header-actions">
+      <a href="/" class="btn small">返回</a>
+    </div>
+  </header>
+
+  <section class="history-wrap">
+    <div class="history-toolbar">
+      <input type="search" id="history-q" placeholder="按标题搜索" autocomplete="off">
+    </div>
+    <p id="history-status" class="hint"></p>
+    <ul id="history-list" class="history-list"></ul>
+  </section>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/history.js"></script>
+</body>
+</html>

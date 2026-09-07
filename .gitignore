@@ -10,3 +10,8 @@ wheels/
 # Virtual environments
 .venv
 data/
+
+# 调试临时产物
+.playwright-mcp/
+*.png
+

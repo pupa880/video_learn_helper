@@ -42,7 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "asr": {
-        "model": "faster-whisper",  # faster-whisper / sensevoice
+        "model": "sensevoice",  # sensevoice（Silero VAD + FunASR）/ faster-whisper
         "whisper_model": "small",
         "device": "cpu",
         "language": "auto",
@@ -211,22 +211,55 @@ def public_config() -> dict[str, Any]:
             },
         },
         "asr": dict(cfg.get("asr", {})),
-        "bilibili": {"cookies_uploaded": COOKIES_PATH.exists()},
+        "bilibili": {"cookies_uploaded": bool(cookies_path())},
         "asr_available": asr_available(),
+        "asr_model_cached": asr_model_cached(),
     }
 
 
 def asr_available() -> bool:
     try:
-        import faster_whisper  # noqa: F401
+        import funasr  # noqa: F401
         return True
     except Exception:
         pass
     try:
-        import funasr  # noqa: F401
+        import faster_whisper  # noqa: F401
         return True
     except Exception:
         return False
+
+
+def _asr_marker_path(model: str, whisper_model: str = "small") -> Path:
+    name = f"{model}-{whisper_model}" if model == "faster-whisper" else (model or "sensevoice")
+    return DATA_DIR / f".asr-ready-{name}"
+
+
+def mark_asr_model_cached(model: str, whisper_model: str = "small") -> None:
+    """首次成功加载模型后打标，前端下次不再弹出下载提示。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _asr_marker_path(model, whisper_model).touch()
+
+
+def asr_model_cached() -> bool:
+    """当前所选 ASR 模型权重是否已在本地（标记文件或常见缓存目录）。"""
+    cfg = load_config().get("asr", {})
+    model = cfg.get("model") or "sensevoice"
+    whisper = cfg.get("whisper_model") or "small"
+    if _asr_marker_path(model, whisper).exists():
+        return True
+    home = Path.home()
+    if model == "faster-whisper":
+        hf = Path(os.environ.get("HF_HOME", home / ".cache" / "huggingface"))
+        slug = f"models--Systran--faster-whisper-{whisper}"
+        hub = hf / "hub" / slug
+        return hub.is_dir() and any(hub.rglob("*.bin"))
+    ms = Path(os.environ.get("MODELSCOPE_CACHE", home / ".cache" / "modelscope"))
+    for name in ("SenseVoiceSmall", "sensevoicesmall"):
+        for p in (ms / "hub" / "models" / "iic" / name, ms / "hub" / "iic" / name):
+            if p.is_dir() and any(p.iterdir()):
+                return True
+    return False
 
 
 def save_cookies(content: bytes) -> None:
@@ -235,4 +268,9 @@ def save_cookies(content: bytes) -> None:
 
 
 def cookies_path() -> str | None:
-    return str(COOKIES_PATH) if COOKIES_PATH.exists() else None
+    try:
+        if COOKIES_PATH.is_file() and COOKIES_PATH.stat().st_size > 0:
+            return str(COOKIES_PATH)
+    except OSError:
+        return None
+    return None

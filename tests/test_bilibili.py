@@ -1,6 +1,11 @@
 """B站链接分P 参数处理（纯函数，不访问网络）。"""
 
-from app.services.bilibili import page_from_url, upload_date_of, with_page
+from app.services.bilibili import (
+    classify_subtitle_error,
+    page_from_url,
+    upload_date_of,
+    with_page,
+)
 
 
 def test_page_from_url():
@@ -36,3 +41,25 @@ def test_upload_date_of():
 def test_with_page_appends():
     assert with_page("https://www.bilibili.com/video/BV1xx", 2).endswith("?p=2")
     assert "p=2" in with_page("https://www.bilibili.com/video/BV1xx?t=1", 2)
+
+
+def test_classify_subtitle_error_wind_control():
+    msg = classify_subtitle_error("HTTP Error 412: Precondition Failed", has_cookies=True)
+    assert "风控" in msg
+    assert "cookies" not in msg.lower() or "请稍后再试" in msg
+    no_cookie = classify_subtitle_error("-412 请求被拦截", has_cookies=False)
+    assert "风控" in no_cookie
+    assert "cookies" in no_cookie.lower()
+
+
+def test_classify_subtitle_error_missing_cookies():
+    msg = classify_subtitle_error("字幕内容为空", has_cookies=False)
+    assert "未上传" in msg
+    assert "cookies" in msg.lower()
+
+
+def test_classify_subtitle_error_invalid_cookies():
+    msg = classify_subtitle_error("-101 账号未登录", has_cookies=True)
+    assert "无效" in msg or "过期" in msg
+    unknown = classify_subtitle_error("connection reset", has_cookies=True)
+    assert "connection reset" in unknown

@@ -1,5 +1,4 @@
-/* 用户库：IndexedDB 存列表/字幕/总结/对话；本地视频文件进 OPFS（不行则退回 IDB）。
-   后端 data/ 只做串流代理、转录音频等临时缓存，不当作用户库。 */
+/* 一次性把旧版 IndexedDB/OPFS 用户库迁到后端。运行期数据以 data/videos 为准。 */
 (function (global) {
   const DB_NAME = 'vlh-library';
   const DB_VERSION = 1;
@@ -183,5 +182,15 @@
     saveLocalFile,
     getLocalFile,
     deleteLocalFile,
+
+    async drop() {
+      _db = null;
+      await new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(DB_NAME);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+        req.onblocked = () => resolve();
+      });
+    },
   };
 })(window);

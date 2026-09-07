@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>视频学习助手</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/chat.css">
 </head>
 <body>
   <input type="file" id="file-video" accept="video/*" hidden>
@@ -56,6 +57,7 @@
       <div id="landing-recent" class="landing-recent" hidden>
         <h2>最近</h2>
         <ul id="landing-recent-list"></ul>
+        <a href="/history" id="landing-more" class="landing-more" hidden>更多</a>
       </div>
     </div>
   </section>
@@ -96,10 +98,29 @@
             <input type="range" id="seek-bar" class="pc-seek" min="0" max="1000" value="0">
             <span id="time-display" class="pc-time">00:00 / 00:00</span>
             <select id="quality-select" class="pc-quality" title="切换清晰度" hidden></select>
+            <select id="rate-select" class="pc-quality pc-rate" title="播放倍速">
+              <option value="0.5">0.5x</option>
+              <option value="1">1x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2x</option>
+            </select>
             <button id="btn-caption" class="pc-btn is-on" title="字幕" aria-pressed="true">CC</button>
             <button id="btn-mute" class="pc-btn" title="静音">🔊</button>
             <input type="range" id="volume-bar" class="pc-vol" min="0" max="1" step="0.05" value="1" title="音量">
+            <button type="button" id="btn-fs-chat" class="pc-btn pc-fs-chat" title="问答" aria-pressed="false">AI</button>
             <button id="btn-fullscreen" class="pc-btn" title="全屏">⛶</button>
+          </div>
+          <div id="fs-chat" class="fs-chat" hidden role="dialog" aria-label="全屏 AI 问答">
+            <div class="fs-chat-body" id="fs-chat-body"></div>
+            <div class="fs-chat-handle n" data-edge="n"></div>
+            <div class="fs-chat-handle s" data-edge="s"></div>
+            <div class="fs-chat-handle e" data-edge="e"></div>
+            <div class="fs-chat-handle w" data-edge="w"></div>
+            <div class="fs-chat-handle ne" data-edge="ne"></div>
+            <div class="fs-chat-handle nw" data-edge="nw"></div>
+            <div class="fs-chat-handle se" data-edge="se"></div>
+            <div class="fs-chat-handle sw" data-edge="sw"></div>
           </div>
         </div>
       </section>
@@ -119,6 +140,7 @@
               <button type="button" id="btn-clear-chat">清空对话</button>
             </div>
           </div>
+          <button type="button" id="btn-fs-chat-close" class="icon-btn fs-chat-close" hidden title="关闭悬浮问答">×</button>
         </div>
         <div id="chat-inject" class="chat-inject" hidden></div>
         <div id="chat-messages" class="chat-messages">
@@ -231,18 +253,16 @@
       </div>
       <h3>B站 cookies</h3>
       <div class="form-row">
-        <label class="btn small file-btn">
-          上传 cookies.txt
-          <input type="file" id="cfg-cookies" accept=".txt" hidden>
-        </label>
+        <button type="button" id="btn-upload-cookies" class="btn small">上传 cookies.txt</button>
+        <input type="file" id="cfg-cookies" accept=".txt" hidden>
         <span id="cookies-status" class="hint"></span>
       </div>
       <h3>ASR 转录</h3>
       <div class="form-row">
         <label>模型</label>
         <select id="cfg-asr-model">
-          <option value="faster-whisper">faster-whisper</option>
           <option value="sensevoice">SenseVoiceSmall</option>
+          <option value="faster-whisper">faster-whisper</option>
         </select>
         <span id="wrap-whisper-model" class="sub-fields">
           <label>whisper 规格</label>
@@ -259,6 +279,13 @@
         <select id="cfg-asr-language"></select>
       </div>
       <div id="asr-availability" class="hint"></div>
+      <h3>快捷键</h3>
+      <div class="form-row">
+        <label>全屏唤起 AI 问答</label>
+        <button type="button" id="cfg-fs-chat-shortcut" class="btn small shortcut-btn" title="点击后按下新的快捷键">Alt + A</button>
+        <button type="button" id="cfg-fs-chat-shortcut-reset" class="btn small ghost">恢复默认</button>
+      </div>
+      <div class="hint">仅在视频全屏时生效。点击按键后按下新组合即可修改，需包含 Ctrl / Alt / Meta，或使用 F1–F12。</div>
       <div id="settings-status" class="hint"></div>
       <div class="modal-actions">
         <button id="btn-save-settings" class="btn primary">保存</button>
@@ -300,6 +327,18 @@
         <span class="cs-unit">条</span>
       </div>
       <div id="cs-preview" class="hint"></div>
+
+      <h3>上下文长度</h3>
+      <div class="cs-item">
+        <label class="chk"><input type="checkbox" id="cs-auto-compress"> 自动压缩</label>
+        <div class="cs-desc">对话加上注入的字幕/总结接近阈值时，先把此前问答压成摘要再发送。默认关闭；关闭时上下文满了会在对话区报错，并让你选择「开启新对话」或「压缩上下文」。</div>
+      </div>
+      <div class="form-row">
+        <label>触发阈值</label>
+        <input type="number" id="cs-compress-k" min="8" max="2000" step="1">
+        <span class="cs-unit">k token</span>
+      </div>
+      <div class="cs-desc">按字符粗算（约 2 字 ≈ 1 token）。模型窗口 256k 时可设 200 左右，留一点余量给回复。未开启自动压缩时，这个值不生效。</div>
 
       <div class="modal-actions">
         <button id="btn-chat-settings-close" class="btn primary">完成</button>
@@ -345,6 +384,13 @@
   <script src="/static/vendor/dash.all.min.js"></script>
   <script src="/static/layout.js"></script>
   <script src="/static/storage.js"></script>
+  <script src="/static/app.js"></script>
+  <script src="/static/player.js"></script>
+  <script src="/static/video.js"></script>
+  <script src="/static/subtitle.js"></script>
+  <script src="/static/chat.js"></script>
+  <script src="/static/fs-chat.js"></script>
+  <script src="/static/settings.js"></script>
   <script src="/static/main.js"></script>
 </body>
 </html>

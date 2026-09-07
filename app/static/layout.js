@@ -550,6 +550,10 @@ function onDragStart(e) {
     e.preventDefault();
     return;
   }
+  if (window.vlhFsChat?.isOpen()) {
+    e.preventDefault();
+    return;
+  }
   const panel = handle.closest('[data-panel]');
   if (!panel) {
     e.preventDefault();
@@ -572,9 +576,12 @@ function renderLayout() {
   if (!root) return;
   const panels = getPanels();
   if (PANEL_IDS.some((id) => !panels[id])) return;
+  const fsOpen = typeof window.vlhFsChat?.isOpen === 'function' && window.vlhFsChat.isOpen();
 
   // 先把面板从旧树上摘到 root，再删 leftover，避免隐藏面板跟着旧树被移除
+  // 全屏悬浮问答期间问答面板在 #player-box 里，不能摘回来
   for (const id of PANEL_IDS) {
+    if (id === 'chat' && fsOpen) continue;
     root.append(panels[id]);
     panels[id].classList.toggle('panel-hidden', hidden.has(id));
   }
@@ -587,7 +594,9 @@ function renderLayout() {
     stack.className = 'layout-stack';
     root.append(stack);
     for (const id of ['video', 'subtitle', 'chat']) {
-      if (!hidden.has(id)) stack.append(panels[id]);
+      if (hidden.has(id)) continue;
+      if (id === 'chat' && fsOpen) continue;
+      stack.append(panels[id]);
     }
   } else if (!anyVisible(tree)) {
     const empty = document.createElement('div');
@@ -600,6 +609,7 @@ function renderLayout() {
     root.append(treeEl);
     for (const id of PANEL_IDS) {
       if (hidden.has(id)) continue;
+      if (id === 'chat' && fsOpen) continue;
       const slot = treeEl.dataset?.slot === id
         ? treeEl
         : treeEl.querySelector(`[data-slot="${id}"]`);
@@ -636,6 +646,7 @@ initLayout();
 
 window.vlhLayout = {
   getTree: () => clone(tree),
+  refresh: renderLayout,
   swap: applySwap,
   dockPanel: applyDockPanel,
   dockWorkspace: applyDockWorkspace,

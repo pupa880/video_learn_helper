@@ -1,4 +1,4 @@
-"""字幕 API：SRT 解析、B站官方字幕拉取。结果交前端入库，后端不当事。"""
+"""字幕 API：SRT 解析、B站官方字幕拉取、按视频读写用户库。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from .. import state
 from ..services import bilibili
-from ..services.subtitle import parse_srt
+from ..services.subtitle import Cue, parse_srt
 
 router = APIRouter(prefix="/api/subtitle", tags=["subtitle"])
 
@@ -15,13 +15,31 @@ router = APIRouter(prefix="/api/subtitle", tags=["subtitle"])
 class BilibiliSubtitleRequest(BaseModel):
     url: str
     lang: str | None = None  # 不指定时优先中文，否则第一种语言
+    video_id: str | None = None
+
+
+class CueIn(BaseModel):
+    start: float
+    end: float
+    text: str
+
+
+class CuesBody(BaseModel):
+    cues: list[CueIn]
 
 
 @router.get("/{video_id}")
 def get_subtitles(video_id: str):
-    """读工作缓存里的旧字幕（迁移用）。用户库以浏览器为准。"""
     cues = state.load_subtitles(video_id)
     return {"cues": [c.to_dict() for c in cues]}
+
+
+@router.put("/{video_id}")
+def put_subtitles(video_id: str, body: CuesBody):
+    state.check_video_id(video_id)
+    cues = [Cue(c.start, c.end, c.text) for c in body.cues]
+    state.save_subtitles(video_id, cues)
+    return {"count": len(cues)}
 
 
 @router.post("/parse")
@@ -41,8 +59,11 @@ async def parse_srt_file(file: UploadFile):
 
 @router.post("/upload")
 async def upload_srt(video_id: str, file: UploadFile):
-    """兼容旧前端：解析 SRT。不再写入工作缓存。"""
+    """解析 SRT 并写入该视频的用户库。"""
     data = await parse_srt_file(file)
+    state.check_video_id(video_id)
+    cues = [Cue(c["start"], c["end"], c["text"]) for c in data["cues"]]
+    state.save_subtitles(video_id, cues)
     return data
 
 
@@ -61,6 +82,9 @@ def bilibili_subtitle(req: BilibiliSubtitleRequest):
     else:
         lang = next((l for l in subs if "zh" in l), next(iter(subs)))
         cues = subs[lang]
+    if req.video_id:
+        state.check_video_id(req.video_id)
+        state.save_subtitles(req.video_id, cues)
     return {
         "lang": lang,
         "available_langs": list(subs.keys()),

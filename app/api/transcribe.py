@@ -52,7 +52,20 @@ def _get_asr():
         if key not in _asr_cache:
             from ..services.asr.base import create_asr
             _asr_cache[key] = create_asr(cfg["model"], cfg["device"], cfg.get("whisper_model", "small"))
+            app_config.mark_asr_model_cached(cfg["model"], cfg.get("whisper_model", "small"))
         return _asr_cache[key]
+
+
+def _emit_model_loading(task_id: str) -> None:
+    cached = app_config.asr_model_cached()
+    _emit(task_id, {
+        "type": "progress",
+        "text": (
+            "正在加载识别模型..."
+            if cached
+            else "正在下载/加载识别模型（首次运行，可能需要几分钟）..."
+        ),
+    })
 
 
 def _get_vad():
@@ -95,9 +108,10 @@ def _transcribe_full(task_id: str, video_id: str) -> None:
     language = cfg.get("language", "auto")
     _emit(task_id, {"type": "progress", "text": "抽取音频..."})
     wav = _ensure_audio(video_id)
+    _emit_model_loading(task_id)
     asr = _get_asr()
 
-    _emit(task_id, {"type": "progress", "text": "模型转录中（首次运行需下载模型权重）..."})
+    _emit(task_id, {"type": "progress", "text": "模型转录中..."})
     segments = asr.transcribe_with_timestamps(str(wav), language)
     if segments is None:
         # 模型不输出时间戳 → VAD 切段 + 逐段识别
@@ -138,6 +152,7 @@ def _transcribe_realtime(task_id: str, video_id: str, start_position: float) -> 
     wav = _ensure_audio(video_id)
     audio = _load_audio(wav)
     duration = len(audio) / 16000
+    _emit_model_loading(task_id)
     asr = _get_asr()
     vad = _get_vad()
 
@@ -208,7 +223,7 @@ def _worker(task_id: str, video_id: str, mode: str, start_position: float) -> No
 def start(req: StartRequest):
     if not app_config.asr_available():
         raise HTTPException(
-            400, "未安装 ASR 依赖组，请先执行: uv sync --extra asr"
+            400, "ASR 依赖未安装，请重新执行 uv sync"
         )
     if not state.video_path(req.video_id) and not state.audio_path(req.video_id).exists():
         if state.load_meta(req.video_id).get("stream"):

@@ -45,6 +45,10 @@ def create_app() -> FastAPI:
     def index():
         return FileResponse(STATIC_DIR / "index.html")
 
+    @app.get("/history")
+    def history_page():
+        return FileResponse(STATIC_DIR / "history.html")
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
 

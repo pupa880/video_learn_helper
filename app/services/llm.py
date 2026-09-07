@@ -216,6 +216,87 @@ def stream_chat(
             yield "content", delta.content
 
 
+COMPRESS_PROMPT = (
+    "你是学习助手。请把下面的师生问答压缩成一份简洁的中文摘要，"
+    "保留：讨论过的知识点、用户的疑问、已有结论、尚未解决的问题。"
+    "用条目列出，不要寒暄，不要重复原文。"
+)
+
+_OVERFLOW_MARKERS = (
+    "context_length",
+    "context length",
+    "context window",
+    "maximum context",
+    "max context",
+    "too many tokens",
+    "prompt is too long",
+    "context overflow",
+    "exceeds the context",
+    "exceed context",
+    "token limit",
+    "上下文长度",
+    "超出上下文",
+    "最大上下文",
+    "上下文窗口",
+)
+
+
+def estimate_tokens(text: str) -> int:
+    """粗算 token：中英混排约 2 字 ≈ 1 token。"""
+    return max(0, (len(text or "") + 1) // 2)
+
+
+def is_context_overflow(exc: BaseException | str) -> bool:
+    s = str(exc).lower()
+    return any(m in s for m in _OVERFLOW_MARKERS)
+
+
+def _plain_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return " ".join(parts)
+    return ""
+
+
+def flatten_chat_for_compress(messages: list[dict]) -> str:
+    """把问答历史压成纯文本，供摘要模型使用。"""
+    lines: list[str] = []
+    for m in messages:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = _plain_content(m.get("content")).strip()
+        if not text:
+            continue
+        label = "学生" if role == "user" else "助手"
+        lines.append(f"{label}：{text}")
+    return "\n\n".join(lines)
+
+
+def compress_messages(messages: list[dict]) -> str:
+    """把多轮问答压成摘要（调用方负责写回对话历史）。"""
+    body = flatten_chat_for_compress(messages)
+    if not body.strip():
+        raise RuntimeError("没有可压缩的对话")
+    client, cfg = get_client()
+    resp = client.chat.completions.create(
+        model=cfg["model"],
+        messages=[
+            {"role": "system", "content": COMPRESS_PROMPT},
+            {"role": "user", "content": body[:80000]},
+        ],
+        stream=False,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
 def list_models(base_url: str, api_key: str) -> list[str]:
     """按指定的 base_url/api_key 拉取模型列表（设置面板用）。
 

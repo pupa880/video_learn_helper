@@ -1,6 +1,6 @@
 """AI 问答 API：多轮、总结/完整字幕作 system 背景、当前字幕写入 user、图片帧，SSE 流式。
 
-字幕/总结/视频信息由前端用户库提供，后端不读盘。
+字幕/总结/视频信息/对话历史按 video_id 读用户库。
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ from typing import Any, Generator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from .. import state
 from ..services import llm
 from ..services.subtitle import Cue, cues_to_text, find_cue_index
 
@@ -23,17 +24,9 @@ class ChatMessage(BaseModel):
     content: str
 
 
-class CueIn(BaseModel):
-    start: float
-    end: float
-    text: str
-
-
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
-    cues: list[CueIn] = []
-    summary: str | None = None
-    video_meta: dict[str, Any] | None = None
+    video_id: str | None = None
     include_subtitles: bool = False
     current_time: float = 0.0
     image_b64: str | None = None
@@ -49,10 +42,6 @@ class ChatRequest(BaseModel):
 FULL_SUBTITLE_MAX_CHARS = 60000
 
 
-def _cues(raw: list[CueIn]) -> list[Cue]:
-    return [Cue(c.start, c.end, c.text) for c in raw]
-
-
 def resolve_injections(
     cues: list[Cue],
     *,
@@ -62,7 +51,7 @@ def resolve_injections(
     subtitle_before: int,
     subtitle_after: int,
 ) -> dict[str, Any]:
-    """由前端提供的字幕算出本轮要注入的完整字幕 / 当前句 / 前后文。"""
+    """由字幕算出本轮要注入的完整字幕 / 当前句 / 前后文。"""
     full_subtitles = None
     full_truncated = False
     if include_full_subtitles and cues:
@@ -110,7 +99,7 @@ def _sanitize_messages(messages: list[dict]) -> list[dict]:
 
 
 class SummaryRequest(BaseModel):
-    cues: list[CueIn]
+    video_id: str
 
 
 @router.post("")
@@ -118,7 +107,9 @@ def chat(req: ChatRequest) -> StreamingResponse:
     if req.image_b64 and not llm.supports_image():
         raise HTTPException(400, "当前模型不支持图片理解（deepseek 不支持发送视频帧）")
 
-    cues = _cues(req.cues)
+    if req.video_id:
+        state.check_video_id(req.video_id)
+    cues = state.load_subtitles(req.video_id) if req.video_id else []
     inj = resolve_injections(
         cues,
         include_full_subtitles=req.include_full_subtitles,
@@ -130,17 +121,18 @@ def chat(req: ChatRequest) -> StreamingResponse:
 
     def event_source() -> Generator[str, None, None]:
         try:
-            summary = req.summary if req.include_summary else None
+            summary = state.load_summary(req.video_id) if req.include_summary and req.video_id else None
             generated = False
             if req.include_summary and not summary and cues:
                 yield f"data: {json.dumps({'type': 'status', 'text': '首次对话，正在自动生成视频总结…'}, ensure_ascii=False)}\n\n"
                 summary = llm.generate_summary(cues_to_text(cues))
                 generated = True
-            if generated and summary:
+            if generated and summary and req.video_id:
+                state.save_summary(req.video_id, summary)
                 yield f"data: {json.dumps({'type': 'summary', 'text': summary}, ensure_ascii=False)}\n\n"
             video_info = None
-            if req.include_video_info:
-                video_info = llm.format_video_info(req.video_meta)
+            if req.include_video_info and req.video_id:
+                video_info = llm.format_video_info(state.load_meta(req.video_id))
             messages = llm.build_qa_messages(
                 [m.model_dump() for m in req.messages],
                 summary=summary,
@@ -168,19 +160,64 @@ def chat(req: ChatRequest) -> StreamingResponse:
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as exc:
-            yield f"data: {json.dumps({'type': 'error', 'text': str(exc)}, ensure_ascii=False)}\n\n"
+            kind = "overflow" if llm.is_context_overflow(exc) else "error"
+            yield f"data: {json.dumps({'type': kind, 'text': str(exc)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_source(), media_type="text/event-stream")
 
 
+class HistoryBody(BaseModel):
+    messages: list[dict] = Field(default_factory=list)
+
+
+@router.post("/compress")
+def compress(body: HistoryBody):
+    """把此前问答压成摘要，腾出上下文。"""
+    msgs = [m for m in body.messages if m.get("role") in ("user", "assistant")]
+    if not msgs:
+        raise HTTPException(400, "没有可压缩的对话")
+    try:
+        text = llm.compress_messages(msgs)
+    except Exception as exc:
+        raise HTTPException(400, f"压缩失败: {exc}") from exc
+    if not text:
+        raise HTTPException(400, "压缩结果为空")
+    return {"summary": text}
+
+
 @router.post("/summary")
 def summary(req: SummaryRequest):
-    """由前端提供的字幕生成视频总结；缓存由前端负责。"""
-    cues = _cues(req.cues)
+    """由用户库字幕生成视频总结并缓存。"""
+    state.check_video_id(req.video_id)
+    cues = state.load_subtitles(req.video_id)
     if not cues:
         raise HTTPException(400, "没有字幕，无法生成总结")
+    cached = state.load_summary(req.video_id)
+    if cached:
+        return {"summary": cached, "cached": True}
     try:
         text = llm.generate_summary(cues_to_text(cues))
     except Exception as exc:
         raise HTTPException(400, f"总结生成失败: {exc}") from exc
+    state.save_summary(req.video_id, text)
     return {"summary": text, "cached": False}
+
+
+@router.get("/{video_id}/history")
+def get_history(video_id: str):
+    state.check_video_id(video_id)
+    return {"messages": state.load_chat(video_id)}
+
+
+@router.put("/{video_id}/history")
+def put_history(video_id: str, body: HistoryBody):
+    state.check_video_id(video_id)
+    state.save_chat(video_id, body.messages)
+    return {"count": len(body.messages)}
+
+
+@router.delete("/{video_id}/summary")
+def delete_summary(video_id: str):
+    state.check_video_id(video_id)
+    state.save_summary(video_id, None)
+    return {"ok": True}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -270,56 +271,111 @@ def download_audio(url: str, out_dir: str | Path,
     return out
 
 
-def fetch_subtitles(url: str) -> dict[str, list]:
-    """拉取官方字幕，返回 ``{语言: [Cue...]}``。未登录时接口拒绝，抛错提示。
+_WIND_CONTROL_RE = re.compile(
+    r"风控|拦截|[-]412|\b412\b|precondition failed|risk control|too many requests|频繁",
+    re.I,
+)
+_LOGIN_RE = re.compile(
+    r"未登录|[-]101|\blogin\b|unauthorized|cookie.*invalid|invalid.*cookie|expired",
+    re.I,
+)
 
-    新版 yt-dlp 把 B站字幕以内联 SRT 文本（``data`` 字段）返回；
-    旧版给 json/json3 下载地址，两种形态都兼容。
-    """
+
+def classify_subtitle_error(message: str, has_cookies: bool) -> str:
+    """把字幕失败原因说清楚：缺 cookies、cookies 失效、还是接口风控。"""
+    text = (message or "").strip()
+    wind = bool(_WIND_CONTROL_RE.search(text))
+    login = bool(_LOGIN_RE.search(text))
+    if wind:
+        if has_cookies:
+            return "官方字幕拉取失败：接口风控（请求被拦截）。请稍后再试。"
+        return (
+            "官方字幕拉取失败：接口风控（请求被拦截）。"
+            "未上传 cookies 时更容易触发，请先在设置中上传 cookies.txt。"
+        )
+    if not has_cookies:
+        return "官方字幕拉取失败：未上传 B站 cookies。请在设置中上传 cookies.txt 后再试。"
+    if login:
+        return "官方字幕拉取失败：cookies 无效或已过期，请重新上传。"
+    if text:
+        return f"官方字幕拉取失败：{text}"
+    return "官方字幕拉取失败：未知原因。"
+
+
+def _parse_subtitle_formats(ydl, formats: list) -> list:
+    """从 yt-dlp 的某种语言字幕 formats 里解析出 Cue 列表。失败抛错，不吞掉原因。"""
     from .subtitle import parse_bilibili_subtitle, parse_srt
 
+    inline = next((f for f in formats if f.get("data")), None)
+    if inline:
+        return parse_srt(inline["data"])
+
+    chosen = next(
+        (f for f in formats if f.get("ext") in ("json", "json3") and f.get("url")),
+        next((f for f in formats if f.get("url")), None),
+    )
+    if not chosen:
+        return []
+
+    url = chosen["url"]
+    headers = chosen.get("http_headers") or {}
+    if headers:
+        import urllib.request
+        raw = ydl.urlopen(urllib.request.Request(url, headers=headers)).read()
+    else:
+        raw = ydl.urlopen(url).read()
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return parse_srt(text)
+
+    if isinstance(data, dict) and "body" not in data:
+        code = data.get("code")
+        if code not in (0, None):
+            msg = data.get("message") or data.get("msg") or ""
+            raise RuntimeError(f"{code} {msg}".strip())
+    if isinstance(data, dict) and "body" in data:
+        return parse_bilibili_subtitle(data)
+    return []
+
+
+def fetch_subtitles(url: str) -> dict[str, list]:
+    """拉取官方字幕，返回 ``{语言: [Cue...]}``。
+
+    新版 yt-dlp 把 B站字幕以内联 SRT 文本（``data`` 字段）返回；
+    旧版给 json/json3 下载地址，两种形态都兼容。下载走 yt-dlp 会话，以便带上 cookies。
+    """
+    has_cookies = bool(app_config.cookies_path())
     try:
         with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, writesubtitles=True)) as ydl:
             info = ydl.extract_info(url, download=False)
-    except Exception as exc:
-        raise BilibiliError(f"字幕信息获取失败: {exc}") from exc
-    if info.get("_type") == "playlist" and info.get("entries"):
-        info = info["entries"][0]
+            if info.get("_type") == "playlist" and info.get("entries"):
+                info = info["entries"][0]
 
-    subs = info.get("subtitles") or {}
-    if not subs:
-        raise BilibiliError(
-            "该视频没有可用官方字幕，或未登录被接口拒绝"
-            "（需在设置面板上传 B站 cookies）。"
-        )
-    result: dict[str, list] = {}
-    for lang, formats in subs.items():
-        cues = []
-        inline = next((f for f in formats if f.get("data")), None)
-        if inline:
-            try:
-                cues = parse_srt(inline["data"])
-            except ValueError:
-                cues = []
-        else:
-            chosen = next(
-                (f for f in formats if f.get("ext") in ("json", "json3") and f.get("url")),
-                next((f for f in formats if f.get("url")), None),
-            )
-            if chosen:
-                try:
-                    import urllib.request
-                    req = urllib.request.Request(
-                        chosen["url"], headers={"User-Agent": "Mozilla/5.0"}
+            subs = info.get("subtitles") or {}
+            if not subs:
+                if not has_cookies:
+                    raise BilibiliError(
+                        "官方字幕拉取失败：未上传 B站 cookies。请在设置中上传 cookies.txt 后再试。"
                     )
-                    import json
-                    with urllib.request.urlopen(req, timeout=30) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                    cues = parse_bilibili_subtitle(data)
-                except Exception:
-                    cues = []
-        if cues:
-            result[lang] = cues
-    if not result:
-        raise BilibiliError("官方字幕下载失败（可能需要 cookies 或接口风控）。")
-    return result
+                raise BilibiliError("该视频没有可用的官方字幕。")
+
+            result: dict[str, list] = {}
+            errors: list[str] = []
+            for lang, formats in subs.items():
+                try:
+                    cues = _parse_subtitle_formats(ydl, formats or [])
+                except Exception as exc:
+                    errors.append(f"{lang}: {exc}")
+                    continue
+                if cues:
+                    result[lang] = cues
+            if not result:
+                detail = "; ".join(errors) if errors else "字幕内容为空"
+                raise BilibiliError(classify_subtitle_error(detail, has_cookies))
+            return result
+    except BilibiliError:
+        raise
+    except Exception as exc:
+        raise BilibiliError(classify_subtitle_error(str(exc), has_cookies)) from exc

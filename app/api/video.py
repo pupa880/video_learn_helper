@@ -14,10 +14,11 @@ from xml.sax.saxutils import quoteattr
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import state
 from ..services import bilibili, media
+from ..services.subtitle import Cue
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 
@@ -56,18 +57,69 @@ class BilibiliRequest(BaseModel):
 
 @router.get("/list")
 def list_videos():
-    """工作缓存目录列表（兼容旧前端）。用户库以浏览器 IndexedDB 为准。"""
+    """用户库列表（不截断），按最近打开时间排序。"""
     return {"videos": state.list_videos()}
 
 
-@router.get("/export")
-def export_library():
-    """一次性导出旧磁盘用户库（含字幕/总结），供前端迁入 IndexedDB。"""
-    return {"videos": state.export_library()}
+class CreateVideo(BaseModel):
+    name: str = ""
+    source: str = "local"
+
+
+@router.post("/create")
+def create_video(req: CreateVideo):
+    """先建用户库记录再播本地文件，媒体随后上传。"""
+    video_id = state.new_video_id()
+    now = time.time()
+    state.save_meta(video_id, {
+        "name": req.name or video_id,
+        "source": req.source or "local",
+        "created_at": now,
+        "updated_at": now,
+        "position": 0,
+    })
+    return state.public_video(video_id)
+
+
+class CueIn(BaseModel):
+    start: float
+    end: float
+    text: str
+
+
+class ImportItem(BaseModel):
+    id: str
+    name: str | None = None
+    source: str | None = None
+    url: str | None = None
+    page: int | None = None
+    uploader: str | None = None
+    upload_date: str | None = None
+    duration: float | None = None
+    kind: str | None = None
+    height: int | None = None
+    qualities: list[dict] | None = None
+    position: float | None = None
+    updated_at: float | None = None
+    updatedAt: float | None = None
+    created_at: float | None = None
+    createdAt: float | None = None
+    cues: list[CueIn] = Field(default_factory=list)
+    summary: str | None = None
+    messages: list[dict] = Field(default_factory=list)
+
+
+@router.post("/import")
+def import_library(item: ImportItem):
+    """浏览器 IndexedDB 用户库迁入后端。"""
+    payload = item.model_dump()
+    if payload.get("cues"):
+        payload["cues"] = [Cue(c["start"], c["end"], c["text"]) for c in payload["cues"]]
+    return state.import_library_item(payload)
 
 
 async def _stage_media(video_id: str, file: UploadFile) -> dict:
-    """把媒体写进工作缓存，供转录等使用。不作为用户库。"""
+    """把媒体写入用户库目录，供播放和转录。"""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_SUFFIX:
         raise HTTPException(400, f"不支持的视频格式: {suffix}")
@@ -89,25 +141,23 @@ async def _stage_media(video_id: str, file: UploadFile) -> dict:
         "duration": media.get_duration(dst),
         "size": size,
     })
+    meta["updated_at"] = time.time()
     state.save_meta(video_id, meta)
-    return {
-        "video_id": video_id,
-        "name": meta.get("name"),
-        "duration": meta.get("duration") or 0,
-        "has_file": True,
-        "size": size,
-    }
+    rec = state.public_video(video_id, meta)
+    rec["video_id"] = video_id
+    rec["size"] = size
+    return rec
 
 
 @router.post("/upload")
 async def upload_video(file: UploadFile, video_id: str | None = None):
-    """暂存本地视频（转录用）。可传入前端已有的 video_id。"""
+    """上传本地视频并写入用户库。"""
     return await _stage_media(video_id or state.new_video_id(), file)
 
 
 @router.post("/{video_id}/media")
 async def put_media(video_id: str, file: UploadFile):
-    """按前端库的 id 暂存媒体，供转录抽取音频。"""
+    """按已有用户库 id 写入/替换媒体文件。"""
     return await _stage_media(video_id, file)
 
 
@@ -124,9 +174,56 @@ def video_status(video_id: str):
     }
 
 
+class VideoPatch(BaseModel):
+    position: float | None = None
+    duration: float | None = None
+    name: str | None = None
+    kind: str | None = None
+    height: int | None = None
+    qualities: list[dict] | None = None
+    touch: bool = False
+
+
+@router.get("/{video_id}")
+def get_video(video_id: str):
+    state.check_video_id(video_id)
+    meta = state.load_meta(video_id)
+    if not meta:
+        raise HTTPException(404, "视频不存在")
+    rec = state.public_video(video_id, meta)
+    rec["summary"] = state.load_summary(video_id)
+    return rec
+
+
+@router.patch("/{video_id}")
+def patch_video(video_id: str, req: VideoPatch):
+    state.check_video_id(video_id)
+    meta = state.load_meta(video_id)
+    if not meta:
+        raise HTTPException(404, "视频不存在")
+    fields: dict = {}
+    if req.position is not None:
+        fields["position"] = max(0.0, float(req.position))
+    if req.duration is not None:
+        fields["duration"] = req.duration
+    if req.name is not None:
+        fields["name"] = req.name
+    if req.kind is not None:
+        fields["kind"] = req.kind
+    if req.height is not None:
+        fields["height"] = req.height
+    if req.qualities is not None:
+        fields["qualities"] = req.qualities
+    if req.touch:
+        fields["updated_at"] = time.time()
+    if fields:
+        meta = state.patch_meta(video_id, **fields)
+    return state.public_video(video_id, meta)
+
+
 @router.delete("/{video_id}")
 def delete_video(video_id: str):
-    """删除工作缓存（HLS 进程、暂存媒体）。用户库由前端自己删。"""
+    """删除用户库中的该视频（含字幕、对话、媒体缓存）。"""
     state.check_video_id(video_id)
     with _hls_lock:
         proc = _hls_procs.pop(video_id, None)
@@ -148,8 +245,7 @@ def bilibili_info(req: BilibiliRequest):
 def bilibili_load(req: BilibiliRequest):
     """解析播放地址并立即返回，播放器直接串流，不下载完整视频。
 
-    video_id 由前端用户库提供（切换清晰度、再次打开时复用）；
-    未传则后端生成。结果写入工作缓存供代理播放，不是用户库。
+    传入 video_id 时复用用户库记录（切清晰度、再次打开）；未传则新建。
     """
     video_id = state.check_video_id(req.video_id) if req.video_id else state.new_video_id()
     meta = state.load_meta(video_id) if req.video_id else {}
@@ -173,6 +269,7 @@ def bilibili_load(req: BilibiliRequest):
     meta["stream"] = {k: info[k] for k in _STREAM_KEYS if k in info}
     if info.get("qualities"):
         meta["qualities"] = info["qualities"]
+    meta["updated_at"] = time.time()
     state.save_meta(video_id, meta)
     return {
         "video_id": video_id,

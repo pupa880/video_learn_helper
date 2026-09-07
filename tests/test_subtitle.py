@@ -128,6 +128,37 @@ def test_compose_user_content():
     assert compose_user_content("hi") == "hi"
 
 
+def test_estimate_tokens_and_overflow_detect():
+    from app.services.llm import estimate_tokens, is_context_overflow
+
+    assert estimate_tokens("") == 0
+    assert estimate_tokens("abcd") == 2
+    assert is_context_overflow("Error code: 400 - maximum context length is 256000")
+    assert is_context_overflow("prompt is too long")
+    assert is_context_overflow("超出上下文窗口限制")
+    assert not is_context_overflow("rate limit exceeded")
+
+
+def test_flatten_chat_for_compress_skips_dividers():
+    from app.services.llm import flatten_chat_for_compress
+
+    text = flatten_chat_for_compress([
+        {"role": "divider", "kind": "new"},
+        {"role": "compact", "content": "旧摘要"},
+        {"role": "user", "content": "什么是进程"},
+        {"role": "assistant", "content": "进程是资源分配单位"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "那线程呢"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,xx"}},
+        ]},
+    ])
+    assert "学生：什么是进程" in text
+    assert "助手：进程是资源分配单位" in text
+    assert "那线程呢" in text
+    assert "旧摘要" not in text
+    assert "data:image" not in text
+
+
 def test_resolve_injections_uses_client_cues():
     from app.api.chat import resolve_injections
     from app.services.subtitle import Cue

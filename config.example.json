@@ -1,0 +1,26 @@
+{
+  "llm": {
+    "provider": "deepseek",
+    "enable_thinking": false,
+    "providers": {
+      "deepseek": {
+        "base_url": "https://api.deepseek.com",
+        "api_key": "sk-REPLACE_WITH_YOUR_KEY",
+        "model": "deepseek-chat",
+        "supports_image": false
+      },
+      "openai": {
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-REPLACE_WITH_YOUR_KEY",
+        "model": "gpt-4o-mini",
+        "supports_image": true
+      }
+    }
+  },
+  "asr": {
+    "model": "sensevoice",
+    "whisper_model": "small",
+    "device": "cpu",
+    "language": "auto"
+  }
+}
